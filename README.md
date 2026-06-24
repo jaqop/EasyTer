@@ -44,9 +44,10 @@ WSL, Claude Code, vim, …).
 
 ## Install
 
-Double-click **`install.bat`** — it works from any folder (it switches to its own
-directory, so it always finds `requirements.txt`). Or do it manually from the
-project folder:
+Double-click **`install.bat`**. It works from any folder: it shows where EasyTer
+is, warns you if that's a system/temporary folder, lets you install here or
+relocate to `C:\EasyTer` (recommended), then installs the dependencies. Or do it
+manually from the project folder:
 
 ```sh
 cd path\to\EasyTer
