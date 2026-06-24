@@ -61,7 +61,7 @@ STRINGS = {
         "settings.ansi": "ANSI colors:",
         "settings.themes": "Themes ({n}):",
         "settings.language": "Language:",
-        "settings.language_note": "(applies on next launch)",
+        "settings.language_note": "(applies immediately)",
         "settings.apply": "Apply & Save",
         "settings.cancel": "Cancel",
         # editor
@@ -188,7 +188,7 @@ STRINGS = {
         "settings.ansi": "ألوان ANSI:",
         "settings.themes": "ثيمات ({n}):",
         "settings.language": "اللغة:",
-        "settings.language_note": "(تُطبّق عند الإقلاع التالي)",
+        "settings.language_note": "(تُطبَّق فوراً)",
         "settings.apply": "تطبيق وحفظ",
         "settings.cancel": "إلغاء",
         "editor.rename_tip": "نقر مزدوج لتغيير العنوان",

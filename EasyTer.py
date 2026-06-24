@@ -83,7 +83,7 @@ from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QMenu,
     QSplitter, QDialog, QSpinBox, QPushButton, QLabel, QColorDialog, QFontComboBox,
     QTabWidget, QLineEdit, QPlainTextEdit, QFileDialog, QSlider, QInputDialog,
-    QTextEdit, QComboBox,
+    QTextEdit, QComboBox, QScrollArea, QFrame,
 )
 
 import i18n
@@ -161,6 +161,87 @@ THEMES = {
         "brightgreen": "#7ED4E0", "brightyellow": "#FFD866",
         "brightblue": "#4A9CC5", "brightmagenta": "#C43878",
         "brightcyan": "#7ED4E0", "brightwhite": "#D8DCE4",
+    }),
+    # ---- popular color schemes (switch freely from Settings > Themes) ----
+    "Kali Dark": ("#060a12", "#b6e8e8", {
+        "black": "#0d1117", "red": "#ff5370", "green": "#3ad900",
+        "brown": "#e7c547", "yellow": "#e7c547", "blue": "#2a9df4",
+        "magenta": "#c792ea", "cyan": "#2cf0f0", "white": "#b6e8e8",
+        "brightblack": "#37505a", "brightred": "#ff869a", "brightgreen": "#6bff4a",
+        "brightyellow": "#ffe066", "brightblue": "#6cc4ff", "brightmagenta": "#e0b6ff",
+        "brightcyan": "#84ffff", "brightwhite": "#ffffff",
+    }),
+    "Dracula": ("#282a36", "#f8f8f2", {
+        "black": "#21222c", "red": "#ff5555", "green": "#50fa7b",
+        "brown": "#f1fa8c", "yellow": "#f1fa8c", "blue": "#bd93f9",
+        "magenta": "#ff79c6", "cyan": "#8be9fd", "white": "#f8f8f2",
+        "brightblack": "#6272a4", "brightred": "#ff6e6e", "brightgreen": "#69ff94",
+        "brightyellow": "#ffffa5", "brightblue": "#d6acff", "brightmagenta": "#ff92df",
+        "brightcyan": "#a4ffff", "brightwhite": "#ffffff",
+    }),
+    "Nord": ("#2e3440", "#d8dee9", {
+        "black": "#3b4252", "red": "#bf616a", "green": "#a3be8c",
+        "brown": "#ebcb8b", "yellow": "#ebcb8b", "blue": "#81a1c1",
+        "magenta": "#b48ead", "cyan": "#88c0d0", "white": "#e5e9f0",
+        "brightblack": "#4c566a", "brightred": "#bf616a", "brightgreen": "#a3be8c",
+        "brightyellow": "#ebcb8b", "brightblue": "#81a1c1", "brightmagenta": "#b48ead",
+        "brightcyan": "#8fbcbb", "brightwhite": "#eceff4",
+    }),
+    "Gruvbox Dark": ("#282828", "#ebdbb2", {
+        "black": "#282828", "red": "#cc241d", "green": "#98971a",
+        "brown": "#d79921", "yellow": "#d79921", "blue": "#458588",
+        "magenta": "#b16286", "cyan": "#689d6a", "white": "#a89984",
+        "brightblack": "#928374", "brightred": "#fb4934", "brightgreen": "#b8bb26",
+        "brightyellow": "#fabd2f", "brightblue": "#83a598", "brightmagenta": "#d3869b",
+        "brightcyan": "#8ec07c", "brightwhite": "#ebdbb2",
+    }),
+    "Tokyo Night": ("#1a1b26", "#c0caf5", {
+        "black": "#15161e", "red": "#f7768e", "green": "#9ece6a",
+        "brown": "#e0af68", "yellow": "#e0af68", "blue": "#7aa2f7",
+        "magenta": "#bb9af7", "cyan": "#7dcfff", "white": "#a9b1d6",
+        "brightblack": "#414868", "brightred": "#f7768e", "brightgreen": "#9ece6a",
+        "brightyellow": "#e0af68", "brightblue": "#7aa2f7", "brightmagenta": "#bb9af7",
+        "brightcyan": "#7dcfff", "brightwhite": "#c0caf5",
+    }),
+    "Catppuccin Mocha": ("#1e1e2e", "#cdd6f4", {
+        "black": "#45475a", "red": "#f38ba8", "green": "#a6e3a1",
+        "brown": "#f9e2af", "yellow": "#f9e2af", "blue": "#89b4fa",
+        "magenta": "#f5c2e7", "cyan": "#94e2d5", "white": "#bac2de",
+        "brightblack": "#585b70", "brightred": "#f38ba8", "brightgreen": "#a6e3a1",
+        "brightyellow": "#f9e2af", "brightblue": "#89b4fa", "brightmagenta": "#f5c2e7",
+        "brightcyan": "#94e2d5", "brightwhite": "#a6adc8",
+    }),
+    "One Dark": ("#282c34", "#abb2bf", {
+        "black": "#282c34", "red": "#e06c75", "green": "#98c379",
+        "brown": "#e5c07b", "yellow": "#e5c07b", "blue": "#61afef",
+        "magenta": "#c678dd", "cyan": "#56b6c2", "white": "#abb2bf",
+        "brightblack": "#5c6370", "brightred": "#e06c75", "brightgreen": "#98c379",
+        "brightyellow": "#e5c07b", "brightblue": "#61afef", "brightmagenta": "#c678dd",
+        "brightcyan": "#56b6c2", "brightwhite": "#ffffff",
+    }),
+    "Monokai": ("#272822", "#f8f8f2", {
+        "black": "#272822", "red": "#f92672", "green": "#a6e22e",
+        "brown": "#f4bf75", "yellow": "#f4bf75", "blue": "#66d9ef",
+        "magenta": "#ae81ff", "cyan": "#a1efe4", "white": "#f8f8f2",
+        "brightblack": "#75715e", "brightred": "#f92672", "brightgreen": "#a6e22e",
+        "brightyellow": "#f4bf75", "brightblue": "#66d9ef", "brightmagenta": "#ae81ff",
+        "brightcyan": "#a1efe4", "brightwhite": "#f9f8f5",
+    }),
+    "Solarized Dark": ("#002b36", "#839496", {
+        "black": "#073642", "red": "#dc322f", "green": "#859900",
+        "brown": "#b58900", "yellow": "#b58900", "blue": "#268bd2",
+        "magenta": "#d33682", "cyan": "#2aa198", "white": "#eee8d5",
+        "brightblack": "#586e75", "brightred": "#cb4b16", "brightgreen": "#586e75",
+        "brightyellow": "#657b83", "brightblue": "#839496", "brightmagenta": "#6c71c4",
+        "brightcyan": "#93a1a1", "brightwhite": "#fdf6e3",
+    }),
+    "Tomorrow Night": ("#1d1f21", "#c5c8c6", {
+        "black": "#1d1f21", "red": "#cc6666", "green": "#b5bd68",
+        "brown": "#f0c674", "yellow": "#f0c674", "blue": "#81a2be",
+        "magenta": "#b294bb", "cyan": "#8abeb7", "white": "#c5c8c6",
+        "brightblack": "#969896", "brightred": "#cc6666", "brightgreen": "#b5bd68",
+        "brightyellow": "#f0c674", "brightblue": "#81a2be", "brightmagenta": "#b294bb",
+        "brightcyan": "#8abeb7", "brightwhite": "#ffffff",
     }),
 }
 
@@ -1611,7 +1692,7 @@ class SettingsDialog(QDialog):
         self.bg_image_opacity = SETTINGS.get("bg_image_opacity", 0.35)
         self._ansi_btns = {}
         self.setWindowTitle(i18n.t("settings.title"))
-        self.setMinimumWidth(380)
+        self.setMinimumWidth(500)
         self.setStyleSheet(
             "QDialog{background:#161b22;color:#e6edf3;}"
             "QLabel{color:#e6edf3;} QPushButton{background:#21262d;color:#e6edf3;"
@@ -1620,7 +1701,22 @@ class SettingsDialog(QDialog):
             "QSpinBox,QFontComboBox{background:#0d1117;color:#e6edf3;"
             "border:1px solid #30363d;border-radius:4px;padding:3px;}"
         )
-        g = QGridLayout(self)
+        # scrollable form so a tall settings list never clips the buttons
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setStyleSheet("QScrollArea{border:0;background:#161b22;}")
+        outer.addWidget(scroll, 1)
+        content = QWidget()
+        content.setStyleSheet("background:#161b22;")
+        scroll.setWidget(content)
+        self.setMaximumHeight(680)
+        self.resize(560, 620)
+        g = QGridLayout(content)
         g.setContentsMargins(16, 16, 16, 16)
         g.setVerticalSpacing(12)
 
@@ -1725,7 +1821,9 @@ class SettingsDialog(QDialog):
         lw.setLayout(lang_row)
         g.addWidget(lw, 9, 1)
 
+        # fixed button bar below the scroll area (always visible)
         btns = QHBoxLayout()
+        btns.setContentsMargins(16, 8, 16, 12)
         ok = QPushButton(i18n.t("settings.apply"))
         ok.clicked.connect(self._apply)
         cancel = QPushButton(i18n.t("settings.cancel"))
@@ -1735,7 +1833,7 @@ class SettingsDialog(QDialog):
         btns.addWidget(ok)
         bw = QWidget()
         bw.setLayout(btns)
-        g.addWidget(bw, 10, 0, 1, 2)
+        outer.addWidget(bw)
 
         self._refresh_swatches()
         self._refresh_ansi()
@@ -1824,10 +1922,11 @@ class SettingsDialog(QDialog):
         SETTINGS["fg"] = self.fg
         SETTINGS["palette"] = self.palette
         SETTINGS["opacity"] = self.opacity
-        SETTINGS["language"] = self.lang_combo.currentData()   # applied on next launch
+        SETTINGS["language"] = self.lang_combo.currentData()
         SETTINGS["bg_image"] = self.bg_image
         SETTINGS["bg_image_opacity"] = self.bg_image_opacity
         save_settings()
+        i18n.set_language(SETTINGS["language"])   # live: menus/dialogs/shortcuts switch on next open
         apply_base_colors()
         self.win.apply_settings()
         self.accept()
@@ -2423,15 +2522,15 @@ class MainWindow(QWidget):
         ch = QHBoxLayout(corner)
         ch.setContentsMargins(0, 0, 4, 0)
         ch.setSpacing(2)
-        plus = QPushButton("+")
+        plus = self._plus_btn = QPushButton("+")
         plus.setFixedSize(30, 26)
         plus.setToolTip(i18n.t("win.new_tab_tip"))
         plus.clicked.connect(lambda: self.new_tab())
-        gear = QPushButton("⚙")
+        gear = self._gear_btn = QPushButton("⚙")
         gear.setFixedSize(30, 26)
         gear.setToolTip(i18n.t("win.settings_tip"))
         gear.clicked.connect(self.open_settings)
-        helpb = QPushButton("?")
+        helpb = self._help_btn = QPushButton("?")
         helpb.setFixedSize(30, 26)
         helpb.setToolTip(i18n.t("win.help_tip"))
         helpb.clicked.connect(self.show_shortcuts)
@@ -2698,8 +2797,18 @@ class MainWindow(QWidget):
     def open_settings(self):
         SettingsDialog(self).exec()
 
+    def retranslate(self):
+        """Re-apply UI text after a live language change (title + tooltips).
+        Menus, dialogs and the shortcuts window pick up the new language the
+        next time they open, since they read i18n.t() at build time."""
+        self.setWindowTitle(i18n.t("win.title"))
+        self._plus_btn.setToolTip(i18n.t("win.new_tab_tip"))
+        self._gear_btn.setToolTip(i18n.t("win.settings_tip"))
+        self._help_btn.setToolTip(i18n.t("win.help_tip"))
+
     def apply_settings(self):
         self._style_window()
+        self.retranslate()
         for t in self.findChildren(TerminalWidget):
             t.font_size = SETTINGS["font_size"]
             t._init_font()
