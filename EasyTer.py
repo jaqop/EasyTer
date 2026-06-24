@@ -77,6 +77,7 @@ from PySide6.QtCore import Qt, QObject, Signal, QRect, QPointF, QTimer
 from PySide6.QtGui import (
     QFont, QFontMetrics, QPainter, QColor, QKeyEvent, QPen,
     QTextLayout, QTextCharFormat, QTextOption, QFontDatabase, QSyntaxHighlighter,
+    QPixmap,
 )
 from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QMenu,
@@ -104,6 +105,8 @@ SETTINGS = {
     "palette": None,    # custom ANSI palette (None = default)
     "opacity": 1.0,     # background opacity (1.0 opaque, less = more transparent)
     "language": "en",   # UI language: "en" (default) or "ar" - applied on next launch
+    "bg_image": "",            # optional background image path ("" = none); user-chosen
+    "bg_image_opacity": 0.35,  # how strongly the background image shows through (0..1)
 }
 
 
@@ -111,6 +114,26 @@ def bg_rgba():
     """rgba string for the background at the current opacity (for stylesheets)."""
     c = QColor(SETTINGS["bg"])
     return f"rgba({c.red()},{c.green()},{c.blue()},{SETTINGS.get('opacity', 1.0):.3f})"
+
+
+# ---- optional background image (user-chosen, drawn behind the text) ----
+_BG_PIXMAP = {"path": None, "pm": None}   # original loaded pixmap, cached by path
+
+
+def _bg_image_scaled(w, h):
+    """Return the background image scaled to *cover* a w x h box, or None.
+    Loads/caches the source pixmap; returns None if no image is set or it fails."""
+    path = SETTINGS.get("bg_image") or ""
+    if not path or w <= 0 or h <= 0:
+        return None
+    if _BG_PIXMAP["path"] != path:
+        pm = QPixmap(path)
+        _BG_PIXMAP["path"] = path
+        _BG_PIXMAP["pm"] = pm if not pm.isNull() else None
+    pm = _BG_PIXMAP["pm"]
+    if pm is None:
+        return None
+    return pm.scaled(w, h, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
 
 # Full ANSI palette for the Jonathan Blow (naysayer) theme: green/teal/tan
 NAYSAYER_ANSI = {
@@ -848,6 +871,15 @@ class TerminalWidget(QWidget):
 
     def _paint(self, p):
         p.fillRect(self.rect(), BASE_BG)
+        # optional background image: drawn over the base fill at the chosen
+        # opacity, so text (and ANSI cell backgrounds) stay on top and readable
+        bgpm = _bg_image_scaled(self.width(), self.height())
+        if bgpm is not None:
+            p.setOpacity(max(0.0, min(1.0, float(SETTINGS.get("bg_image_opacity", 0.35)))))
+            x = (self.width() - bgpm.width()) // 2
+            y = (self.height() - bgpm.height()) // 2
+            p.drawPixmap(x, y, bgpm)
+            p.setOpacity(1.0)
         p.setFont(self.font)
         p.setPen(BASE_FG)  # default color for Claude-mode lines (no formats)
         self._row_layouts = {}
@@ -1575,6 +1607,8 @@ class SettingsDialog(QDialog):
         self._orig_bg = SETTINGS["bg"]
         self._orig_fg = SETTINGS["fg"]
         self._orig_palette = SETTINGS.get("palette")
+        self.bg_image = SETTINGS.get("bg_image", "")
+        self.bg_image_opacity = SETTINGS.get("bg_image_opacity", 0.35)
         self._ansi_btns = {}
         self.setWindowTitle(i18n.t("settings.title"))
         self.setMinimumWidth(380)
@@ -1649,8 +1683,36 @@ class SettingsDialog(QDialog):
         self.theme_combo.currentTextChanged.connect(self._on_theme_combo)
         g.addWidget(self.theme_combo, 6, 1)
 
+        # background image (user-chosen; applied on save)
+        g.addWidget(QLabel(i18n.t("settings.bg_image")), 7, 0)
+        img_row = QHBoxLayout()
+        self.img_label = QLabel(os.path.basename(self.bg_image) if self.bg_image else "—")
+        choose = QPushButton(i18n.t("settings.bg_image_choose"))
+        choose.clicked.connect(self._pick_bg_image)
+        clear = QPushButton(i18n.t("settings.bg_image_clear"))
+        clear.clicked.connect(self._clear_bg_image)
+        img_row.addWidget(self.img_label, 1)
+        img_row.addWidget(choose)
+        img_row.addWidget(clear)
+        iw = QWidget()
+        iw.setLayout(img_row)
+        g.addWidget(iw, 7, 1)
+
+        g.addWidget(QLabel(i18n.t("settings.bg_image_opacity")), 8, 0)
+        imgop_row = QHBoxLayout()
+        self.img_op_slider = QSlider(Qt.Horizontal)
+        self.img_op_slider.setRange(0, 100)
+        self.img_op_slider.setValue(int(self.bg_image_opacity * 100))
+        self.img_op_slider.valueChanged.connect(self._on_img_opacity)
+        self.img_op_label = QLabel(f"{int(self.bg_image_opacity * 100)}%")
+        imgop_row.addWidget(self.img_op_slider, 1)
+        imgop_row.addWidget(self.img_op_label)
+        iow = QWidget()
+        iow.setLayout(imgop_row)
+        g.addWidget(iow, 8, 1)
+
         # language (applied on next launch)
-        g.addWidget(QLabel(i18n.t("settings.language")), 7, 0)
+        g.addWidget(QLabel(i18n.t("settings.language")), 9, 0)
         lang_row = QHBoxLayout()
         self.lang_combo = QComboBox()
         self.lang_combo.addItem("English", "en")
@@ -1661,7 +1723,7 @@ class SettingsDialog(QDialog):
         lang_row.addWidget(QLabel(i18n.t("settings.language_note")))
         lw = QWidget()
         lw.setLayout(lang_row)
-        g.addWidget(lw, 7, 1)
+        g.addWidget(lw, 9, 1)
 
         btns = QHBoxLayout()
         ok = QPushButton(i18n.t("settings.apply"))
@@ -1673,7 +1735,7 @@ class SettingsDialog(QDialog):
         btns.addWidget(ok)
         bw = QWidget()
         bw.setLayout(btns)
-        g.addWidget(bw, 8, 0, 1, 2)
+        g.addWidget(bw, 10, 0, 1, 2)
 
         self._refresh_swatches()
         self._refresh_ansi()
@@ -1718,6 +1780,22 @@ class SettingsDialog(QDialog):
         self.op_label.setText(f"{v}%")
         self.win.setWindowOpacity(self.opacity)   # instant live preview
 
+    def _pick_bg_image(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, i18n.t("dialog.pick_image"), "",
+            "Images (*.png *.jpg *.jpeg *.bmp *.gif *.webp)")
+        if path:
+            self.bg_image = path
+            self.img_label.setText(os.path.basename(path))
+
+    def _clear_bg_image(self):
+        self.bg_image = ""
+        self.img_label.setText("—")
+
+    def _on_img_opacity(self, v):
+        self.bg_image_opacity = v / 100.0
+        self.img_op_label.setText(f"{v}%")
+
     def _pick_ansi(self, key):
         c = QColorDialog.getColor(QColor(self.palette.get(key, "#ffffff")), self, i18n.t("dialog.pick_ansi", name=key))
         if c.isValid():
@@ -1747,6 +1825,8 @@ class SettingsDialog(QDialog):
         SETTINGS["palette"] = self.palette
         SETTINGS["opacity"] = self.opacity
         SETTINGS["language"] = self.lang_combo.currentData()   # applied on next launch
+        SETTINGS["bg_image"] = self.bg_image
+        SETTINGS["bg_image_opacity"] = self.bg_image_opacity
         save_settings()
         apply_base_colors()
         self.win.apply_settings()
