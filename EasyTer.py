@@ -107,6 +107,7 @@ SETTINGS = {
     "language": "en",   # UI language: "en" (default) or "ar" - applied on next launch
     "bg_image": "",            # optional background image path ("" = none); user-chosen
     "bg_image_opacity": 0.35,  # how strongly the background image shows through (0..1)
+    "start_dir": "",           # folder new shells open in ("" = home, never system32)
 }
 
 
@@ -684,7 +685,13 @@ class PtyBackend(QObject):
             env.pop("ANTHROPIC_API_KEY", None)
         # a list not a string: keeps paths with spaces (like Git Bash) intact
         spec = command if isinstance(command, list) else [command]
-        self.proc = PtyProcess.spawn(spec, dimensions=(rows, cols), env=env)
+        # start the shell in a sensible directory (the home folder by default,
+        # or a user-chosen one) instead of inheriting whatever launched EasyTer
+        # (which is often C:\Windows\system32)
+        start_dir = SETTINGS.get("start_dir") or os.path.expanduser("~")
+        if not os.path.isdir(start_dir):
+            start_dir = os.path.expanduser("~")
+        self.proc = PtyProcess.spawn(spec, dimensions=(rows, cols), env=env, cwd=start_dir)
         threading.Thread(target=self._reader, daemon=True).start()
 
     def _reader(self):
@@ -1690,6 +1697,7 @@ class SettingsDialog(QDialog):
         self._orig_palette = SETTINGS.get("palette")
         self.bg_image = SETTINGS.get("bg_image", "")
         self.bg_image_opacity = SETTINGS.get("bg_image_opacity", 0.35)
+        self.start_dir = SETTINGS.get("start_dir", "")
         self._ansi_btns = {}
         self.setWindowTitle(i18n.t("settings.title"))
         self.setMinimumWidth(500)
@@ -1807,8 +1815,23 @@ class SettingsDialog(QDialog):
         iow.setLayout(imgop_row)
         g.addWidget(iow, 8, 1)
 
-        # language (applied on next launch)
-        g.addWidget(QLabel(i18n.t("settings.language")), 9, 0)
+        # start folder for new shells (default = home, never system32)
+        g.addWidget(QLabel(i18n.t("settings.start_dir")), 9, 0)
+        sd_row = QHBoxLayout()
+        self.sd_label = QLabel(self.start_dir or "~")
+        sd_choose = QPushButton(i18n.t("settings.bg_image_choose"))
+        sd_choose.clicked.connect(self._pick_start_dir)
+        sd_home = QPushButton(i18n.t("settings.start_dir_home"))
+        sd_home.clicked.connect(self._reset_start_dir)
+        sd_row.addWidget(self.sd_label, 1)
+        sd_row.addWidget(sd_choose)
+        sd_row.addWidget(sd_home)
+        sdw = QWidget()
+        sdw.setLayout(sd_row)
+        g.addWidget(sdw, 9, 1)
+
+        # language (applies immediately)
+        g.addWidget(QLabel(i18n.t("settings.language")), 10, 0)
         lang_row = QHBoxLayout()
         self.lang_combo = QComboBox()
         self.lang_combo.addItem("English", "en")
@@ -1819,7 +1842,7 @@ class SettingsDialog(QDialog):
         lang_row.addWidget(QLabel(i18n.t("settings.language_note")))
         lw = QWidget()
         lw.setLayout(lang_row)
-        g.addWidget(lw, 9, 1)
+        g.addWidget(lw, 10, 1)
 
         # fixed button bar below the scroll area (always visible)
         btns = QHBoxLayout()
@@ -1894,6 +1917,18 @@ class SettingsDialog(QDialog):
         self.bg_image_opacity = v / 100.0
         self.img_op_label.setText(f"{v}%")
 
+    def _pick_start_dir(self):
+        d = QFileDialog.getExistingDirectory(
+            self, i18n.t("dialog.pick_folder"),
+            self.start_dir or os.path.expanduser("~"))
+        if d:
+            self.start_dir = d
+            self.sd_label.setText(d)
+
+    def _reset_start_dir(self):
+        self.start_dir = ""
+        self.sd_label.setText("~")
+
     def _pick_ansi(self, key):
         c = QColorDialog.getColor(QColor(self.palette.get(key, "#ffffff")), self, i18n.t("dialog.pick_ansi", name=key))
         if c.isValid():
@@ -1925,6 +1960,7 @@ class SettingsDialog(QDialog):
         SETTINGS["language"] = self.lang_combo.currentData()
         SETTINGS["bg_image"] = self.bg_image
         SETTINGS["bg_image_opacity"] = self.bg_image_opacity
+        SETTINGS["start_dir"] = self.start_dir
         save_settings()
         i18n.set_language(SETTINGS["language"])   # live: menus/dialogs/shortcuts switch on next open
         apply_base_colors()
