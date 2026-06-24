@@ -62,6 +62,10 @@ STRINGS = {
         # editor
         "editor.rename_tip": "Double-click to rename",
         "editor.save_failed": "  ✎ Save failed: {ex}",
+        "editor.untitled": "Untitled",
+        "editor.open_failed": "# Could not open file: {ex}",
+        "editor.header": "  ✎ Editor · {name}",
+        "win.title_manual": "  (manual)",
         # shortcuts dialog
         "shortcuts.title": "EasyTer Shortcuts",
         "shortcuts.heading": "⌨ EasyTer Shortcuts",
@@ -179,6 +183,10 @@ STRINGS = {
         "settings.cancel": "إلغاء",
         "editor.rename_tip": "نقر مزدوج لتغيير العنوان",
         "editor.save_failed": "  ✎ تعذّر الحفظ: {ex}",
+        "editor.untitled": "بلا عنوان",
+        "editor.open_failed": "# تعذّر فتح الملفّ: {ex}",
+        "editor.header": "  ✎ محرّر · {name}",
+        "win.title_manual": "  (يدويّ)",
         "shortcuts.title": "اختصارات EasyTer",
         "shortcuts.heading": "⌨ اختصارات EasyTer",
         "shortcuts.plugin_heading": "اختصارات إضافاتك",

@@ -1,14 +1,14 @@
 # -*- coding: utf-8 -*-
 """
-EasyTer — طرفيّة عربيّة حقيقيّة (ConPTY)
+EasyTer - a real Arabic-capable terminal (ConPTY)
 ========================================
-محاكي طرفيّة كامل مبنيّ على:
-  - pywinpty  : طرفيّة وهميّة حقيقيّة (ConPTY) تشغّل البرامج التفاعليّة (claude, vim, python...)
-  - pyte      : محاكي شاشة VT (مؤشّر، ألوان، تمرير، تسلسلات ANSI)
-  - PySide6   : الرسم — كلّ سطرٍ يُرسَم *نصّاً موصولاً* عبر محرّك Qt، لا خليّةً خليّة،
-                فتبقى العربيّة موصولة حتّى داخل البرامج التفاعليّة قدر الإمكان.
+A full terminal emulator built on:
+  - pywinpty  : a real pseudo-console (ConPTY) that runs interactive programs (claude, vim, python...)
+  - pyte      : a VT screen emulator (cursor, colors, scrolling, ANSI sequences)
+  - PySide6   : rendering - each line is drawn as *connected text* via Qt's engine, not cell by cell,
+                so Arabic stays joined even inside interactive programs as much as possible.
 
-التشغيل:  pythonw EasyTer.py   (أو EasyTer.vbs / run.bat)
+Run with:  pythonw EasyTer.py   (or EasyTer.vbs / run.bat)
 """
 
 import glob
@@ -49,17 +49,17 @@ def _char_width(d):
         return 1
     return w if (w and w > 0) else 1
 
-# تسلسلات بروتوكول لوحة المفاتيح (kitty: CSI <>=? … u) — pyte لا يفهمها فيطبع 'u'
-# حرفيّاً. نحذفها (لا أثر لها على العرض، مجرّد تفاوض مع لوحة المفاتيح).
+# Keyboard protocol sequences (kitty: CSI <>=? ... u) - pyte doesn't understand them and prints 'u'
+# literally. We strip them (no effect on display, just keyboard negotiation).
 KITTY_KB_RE = re.compile(r"\x1b\[[<>=?][0-9;]*u")
-# تسلسل CSI/ESC ناقص في آخر الدفعة (يُحمَل للقراءة التالية تفادياً للانقسام)
+# Incomplete CSI/ESC sequence at the end of a chunk (carried to the next read to avoid splitting)
 INCOMPLETE_TAIL_RE = re.compile(r"\x1b\[?[0-9;?<>=]*$")
 
 DEFAULT_SHELL = "powershell.exe"
 
 
 def available_shells():
-    """قائمة الصدفات المتاحة على الجهاز: (الاسم، الأمر)."""
+    """List of shells available on this machine: (name, command)."""
     shells = [("PowerShell", "powershell.exe")]
     if shutil.which("pwsh"):
         shells.append(("PowerShell 7", "pwsh.exe"))
@@ -88,11 +88,11 @@ from PySide6.QtWidgets import (
 import i18n
 
 
-# ---- ألوان ANSI القياسيّة ----
+# ---- Standard ANSI colors ----
 BASE_BG = QColor("#0d1117")
 BASE_FG = QColor("#e6edf3")
 
-# ---- الإعدادات (تُحفَظ وتُقرأ من ملفّ بجوار البرنامج) ----
+# ---- Settings (saved/loaded from a file next to the program) ----
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(SCRIPT_DIR, "easyter_config.json")
 SESSION_PATH = os.path.join(SCRIPT_DIR, "easyter_session.json")
@@ -101,18 +101,18 @@ SETTINGS = {
     "font_size": 13,
     "bg": "#0d1117",
     "fg": "#e6edf3",
-    "palette": None,    # لوحة ANSI مخصّصة (None = الافتراضيّة)
-    "opacity": 1.0,     # شفافيّة الخلفيّة (1.0 معتم، أقلّ = أشفّ)
-    "language": "en",   # لغة الواجهة: "en" (افتراضيّة) أو "ar" — تُطبَّق عند الإقلاع التالي
+    "palette": None,    # custom ANSI palette (None = default)
+    "opacity": 1.0,     # background opacity (1.0 opaque, less = more transparent)
+    "language": "en",   # UI language: "en" (default) or "ar" - applied on next launch
 }
 
 
 def bg_rgba():
-    """نصّ rgba للخلفيّة بمستوى الشفافيّة الحاليّ (للأنماط/الـstylesheet)."""
+    """rgba string for the background at the current opacity (for stylesheets)."""
     c = QColor(SETTINGS["bg"])
     return f"rgba({c.red()},{c.green()},{c.blue()},{SETTINGS.get('opacity', 1.0):.3f})"
 
-# لوحة ANSI الكاملة لثيم Jonathan Blow (naysayer): أخضر/تركوازيّ/تان
+# Full ANSI palette for the Jonathan Blow (naysayer) theme: green/teal/tan
 NAYSAYER_ANSI = {
     "black": "#06343a", "red": "#e0556f", "green": "#44b340",
     "brown": "#e6db74", "yellow": "#e6db74", "blue": "#66d9ef",
@@ -129,8 +129,8 @@ THEMES = {
     "أسود مطلق": ("#000000", "#d0d0d0", None),
     "سولاريزد داكن": ("#002b36", "#93a1a1", None),
     "فاتح نهاريّ": ("#fbfbfb", "#1b1b1b", None),
-    "Jonathan Blow": ("#062329", "#d1b897", NAYSAYER_ANSI),   # naysayer كامل
-    "hypr-waves": ("#141929", "#E0E4EC", {                      # منقول من h4ni0/pi
+    "Jonathan Blow": ("#062329", "#d1b897", NAYSAYER_ANSI),   # full naysayer
+    "hypr-waves": ("#141929", "#E0E4EC", {                      # ported from h4ni0/pi
         "black": "#2A2E3D", "red": "#E8364F", "green": "#6EC8A8",
         "brown": "#F9C846", "yellow": "#F9C846", "blue": "#3A7CA5",
         "magenta": "#A8245E", "cyan": "#5EC4D4", "white": "#E0E4EC",
@@ -146,7 +146,7 @@ THEMES_DIR = os.path.join(os.path.expanduser("~"), ".easyter", "themes")
 
 
 def load_themes():
-    """يحمّل ثيمات إضافيّة من ~/.easyter/themes/*.json (صيغة: name/bg/fg/ansi)."""
+    """Loads extra themes from ~/.easyter/themes/*.json (format: name/bg/fg/ansi)."""
     for fpath in sorted(glob.glob(os.path.join(THEMES_DIR, "*.json"))):
         try:
             with open(fpath, encoding="utf-8") as f:
@@ -189,18 +189,18 @@ DEFAULT_PALETTE = {
     "brightblue": "#8db4f8", "brightmagenta": "#e0c1ff",
     "brightcyan": "#7ee0e6", "brightwhite": "#ffffff",
 }
-PALETTE = dict(DEFAULT_PALETTE)   # اللوحة النشطة (تتبدّل مع الثيم)
+PALETTE = dict(DEFAULT_PALETTE)   # active palette (changes with the theme)
 
 
 def apply_palette():
-    """يضبط لوحة ANSI النشطة من الإعدادات (لوحة الثيم أو الافتراضيّة)."""
+    """Sets the active ANSI palette from settings (theme palette or default)."""
     global PALETTE
     pal = SETTINGS.get("palette")
     PALETTE = {**DEFAULT_PALETTE, **pal} if pal else dict(DEFAULT_PALETTE)
 
 
 def mix_hex(a, b, t):
-    """يمزج لونين سداسيّين: t=0 ⇒ a، t=1 ⇒ b. لاشتقاق ألوان الواجهة من الثيم."""
+    """Mixes two hex colors: t=0 => a, t=1 => b. For deriving UI colors from the theme."""
     a = (a or "#000000").lstrip("#")
     b = (b or "#ffffff").lstrip("#")
     if len(a) == 3:
@@ -219,17 +219,17 @@ def mix_hex(a, b, t):
 
 
 def ui_theme_colors():
-    """يشتقّ ألوان واجهة كاملةً من ثيم المستخدم (bg/fg/اللوحة)."""
+    """Derives a full set of UI colors from the user's theme (bg/fg/palette)."""
     bg, fg = SETTINGS["bg"], SETTINGS["fg"]
     accent = PALETTE.get("blue") or PALETTE.get("cyan") or fg
     return {
         "bg": bg,
         "fg": fg,
-        "chrome": mix_hex(bg, fg, 0.06),     # شريط/خلفيّة الواجهة
-        "chrome2": mix_hex(bg, fg, 0.13),    # تبويب غير محدَّد
-        "border": mix_hex(bg, fg, 0.22),     # حدود
-        "dim": mix_hex(bg, fg, 0.55),        # نصّ خافت
-        "accent": accent,                    # تمييز التركيز/التحديد
+        "chrome": mix_hex(bg, fg, 0.06),     # UI bar/background
+        "chrome2": mix_hex(bg, fg, 0.13),    # unselected tab
+        "border": mix_hex(bg, fg, 0.22),     # borders
+        "dim": mix_hex(bg, fg, 0.55),        # dim text
+        "accent": accent,                    # focus/selection accent
         "hover": mix_hex(bg, fg, 0.18),
     }
 
@@ -239,7 +239,7 @@ def resolve_color(name, is_bg):
         return BASE_BG if is_bg else BASE_FG
     if name in PALETTE:
         return QColor(PALETTE[name])
-    # truecolor / 256 يأتي كستّ خانات سداسيّة
+    # truecolor / 256 arrives as a six-digit hex
     if isinstance(name, str) and len(name) == 6:
         try:
             return QColor("#" + name)
@@ -252,7 +252,7 @@ _ARABIC_FONT_LOADED = False
 
 
 def _ensure_arabic_font():
-    """تحميل خطّ Amiri إلى قاعدة خطوط Qt حتّى تُرسَم العربيّة به (دون تثبيت في ويندوز)."""
+    """Load the Amiri font into Qt's font database so Arabic renders with it (without installing it on Windows)."""
     global _ARABIC_FONT_LOADED
     if _ARABIC_FONT_LOADED:
         return
@@ -273,10 +273,10 @@ def _ensure_arabic_font():
 
 
 # ════════════════════════════════════════════════════════════════════════
-#  وضع كلود: عكس UAX#9 (قاعدة L2) — تحويل سطر كلود البصريّ ← منطقيّ
-#  كلود (Ink) يطبّق BiDi بنفسه ويُخرج ترتيباً بصريّاً معكوساً. لإصلاحه:
-#  نعكس البصريّ ← منطقيّ، ثمّ يعيد Qt تطبيق BiDi والتشكيل صحيحاً.
-#  (PowerShell يُخرج منطقيّاً أصلاً، لذلك هذا وضعٌ يُفعَّل لكلود فقط.)
+#  Claude mode: reverse UAX#9 (rule L2) - convert Claude's visual line to logical
+#  Claude (Ink) applies BiDi itself and emits a reversed visual order. To fix it:
+#  we reverse visual -> logical, then Qt re-applies BiDi and shaping correctly.
+#  (PowerShell already emits logical order, so this mode is enabled for Claude only.)
 # ════════════════════════════════════════════════════════════════════════
 
 def _is_ltr_char(ch):
@@ -288,7 +288,7 @@ def _is_ltr_char(ch):
 
 
 def _is_inner_ltr(ch):
-    # محارف تبقى ضمن جزيرة LTR (مسارات، أسماء ملفّات، أرقام إصدار…)
+    # characters that stay inside an LTR island (paths, file names, version numbers...)
     return ch in "._-/:\\@~+=#&%" or _is_ltr_char(ch)
 
 
@@ -301,7 +301,7 @@ def _is_arabic_letter(ch):
 
 
 def line_is_rtl_visual(text):
-    """هل يغلب على السطر طابعٌ عربيّ (فقد عكسه كلود)؟"""
+    """Is the line predominantly Arabic (so Claude reversed it)?"""
     ar = lt = 0
     for ch in text:
         if _is_arabic_letter(ch):
@@ -315,9 +315,9 @@ _LTR_PUNCT = "._-/:\\@~+=#&%"
 
 
 def unbidi_rtl_line(line):
-    """عكس L2 لسطرٍ قاعدته RTL: اعكس كامل السطر ثمّ أعد عكس جُزُر LTR. الترقيم
-    يُضمّ للجزيرة فقط إن تلاه حرفٌ لاتينيّ (فيبقى داخل config.txt لكن يخرج من
-    نهاية رقمٍ مثل «01.» فلا ينقلب إلى «.01»)."""
+    """Reverse L2 for an RTL-base line: reverse the whole line then re-reverse LTR islands. Punctuation
+    is joined to the island only if a Latin letter follows it (so it stays inside config.txt but leaves
+    the end of a number like "01." so it does not flip to ".01")."""
     rev = line[::-1]
     out = []
     i, n = 0, len(rev)
@@ -347,8 +347,8 @@ def _has_arabic(text):
 
 
 def reverse_arabic_runs(line):
-    """يعكس كلّ مقطع عربيّ في مكانه — لأسطر قاعدتها LTR فيها جُزُر عربيّة
-    (مثل: 'What are you working on ؟كتدعاسم...' ← الجزء العربيّ معكوس)."""
+    """Reverse each Arabic run in place - for LTR-base lines that contain Arabic islands
+    (e.g. 'What are you working on ؟كتدعاسم...' - the Arabic part is reversed)."""
     out = []
     i, n = 0, len(line)
     while i < n:
@@ -366,10 +366,10 @@ def reverse_arabic_runs(line):
 
 
 def restore_bidi_line(text):
-    """يحوّل سطر كلود البصريّ ← منطقيّ حسب اتّجاه قاعدته. None = لا تغيير.
-    - قاعدة RTL (عربيّ غالب): اعكس السطر كاملاً (مع جُزُر LTR).
-    - قاعدة LTR فيها عربيّ: اعكس المقاطع العربيّة في مكانها فقط.
-    - إنجليزيّ خالص: لا تغيير."""
+    """Convert Claude's visual line to logical based on its base direction. None = no change.
+    - RTL base (Arabic-dominant): reverse the whole line (with LTR islands).
+    - LTR base with Arabic: reverse only the Arabic runs in place.
+    - pure English: no change."""
     if line_is_rtl_visual(text):
         return unbidi_rtl_line(text)
     if _has_arabic(text):
@@ -378,8 +378,8 @@ def restore_bidi_line(text):
 
 
 # ════════════════════════════════════════════════════════════════════════
-#  نظام الإضافات (Python): يُحمَّل ~/.easyter/init.py عند الإقلاع ويعطي
-#  المستخدم المحترف API: اختصارات، أوامر، ثيمات، خطّافات أحداث، عناصر حالة.
+#  Plugin system (Python): ~/.easyter/init.py is loaded at startup and gives
+#  the power user an API: keybindings, commands, themes, event hooks, status segments.
 # ════════════════════════════════════════════════════════════════════════
 PLUGIN_DIR = os.path.join(os.path.expanduser("~"), ".easyter")
 PLUGIN_INIT = os.path.join(PLUGIN_DIR, "init.py")
@@ -404,14 +404,14 @@ def _parse_combo(combo):
 
 
 class _PluginAPI:
-    """الواجهة التي يستعملها init.py عبر: import easyter as et"""
+    """The API that init.py uses via: import easyter as et"""
 
     def __init__(self):
         self.keybinds = []          # (ctrl, alt, shift, key, cb)
         self.commands = []          # (name, cb)
         self.hooks = {}             # event -> [cb]
         self.status_segments = []   # [cb]
-        self.ui_style = None        # QSS إضافيّ: نصّ أو دالّة(colors)->نصّ
+        self.ui_style = None        # extra QSS: a string or a function(colors)->string
 
     def keybind(self, combo):
         spec = _parse_combo(combo)
@@ -431,20 +431,20 @@ class _PluginAPI:
         THEMES[name] = (bg, fg, ansi)
 
     def set_ui_style(self, qss):
-        """يخصّص شكل الواجهة (تبويبات/حدود/قوائم/حوارات) عبر Qt QSS.
-        مرِّر نصّ QSS، أو دالّةً تستلم قاموس ألوان الثيم وتُرجع نصّاً:
+        """Customize the UI look (tabs/borders/menus/dialogs) via Qt QSS.
+        Pass a QSS string, or a function that takes the theme color dict and returns a string:
             @et.ui_style
             def _(c): return f'QTabBar::tab{{border-radius:0;}}'
-        تُطبَّق فوق نمط الثيم المشتقّ تلقائيّاً، فتُعدّل/تتجاوز ما تشاء."""
+        It is applied on top of the auto-derived theme style, so it tweaks/overrides as you wish."""
         self.ui_style = qss
 
     def ui_style(self, fn):
-        """مزخرِف مكافئ لـset_ui_style بدالّة: @et.ui_style ثمّ def _(colors):"""
+        """Decorator equivalent to set_ui_style with a function: @et.ui_style then def _(colors):"""
         self.ui_style = fn
         return fn
 
     def restyle(self):
-        """يُعيد تطبيق نمط الواجهة (نادِها بعد تغيير ui_style ديناميّاً)."""
+        """Re-applies the UI style (call it after changing ui_style dynamically)."""
         try:
             for w in QApplication.topLevelWidgets():
                 if isinstance(w, MainWindow):
@@ -476,7 +476,7 @@ PLUGINS = _PluginAPI()
 
 
 def run_plugin_keybind(pane, ctrl, alt, shift, key):
-    """يُنفّذ اختصار إضافةٍ مطابِقاً إن وُجد؛ يرجع True عندها."""
+    """Runs a matching plugin keybinding if found; returns True then."""
     for kb in PLUGINS.keybinds:
         kc, ka, ks, kk, cb = kb[0], kb[1], kb[2], kb[3], kb[4]
         if kk == key and kc == ctrl and ka == alt and ks == shift:
@@ -489,7 +489,7 @@ def run_plugin_keybind(pane, ctrl, alt, shift, key):
 
 
 def load_plugins():
-    """يُحمّل ~/.easyter/init.py مع إتاحة وحدة easyter للاستيراد."""
+    """Loads ~/.easyter/init.py with the easyter module available for import."""
     import types
     mod = types.ModuleType("easyter")
     for n in dir(PLUGINS):
@@ -517,7 +517,7 @@ _SGR_NAMES = {
 
 
 def _color_codes(val, base):
-    """يحوّل لون pyte (اسم/سداسيّ) إلى رموز SGR (base=30 للنصّ، 40 للخلفيّة)."""
+    """Converts a pyte color (name/hex) into SGR codes (base=30 for text, 40 for background)."""
     if not val or val == "default":
         return None
     if val in _SGR_NAMES:
@@ -533,7 +533,7 @@ def _color_codes(val, base):
 
 
 def line_to_ansi(row, ncols):
-    """يُسلسِل سطر pyte إلى نصٍّ يحفظ ألوانه (لإعادة البثّ عند التحجيم)."""
+    """Serializes a pyte line into text that preserves its colors (for re-streaming on resize)."""
     out = []
     cur = None
     for c in range(ncols):
@@ -558,11 +558,11 @@ def line_to_ansi(row, ncols):
 
 
 class PtyBackend(QObject):
-    """جلسة ConPTY حيّة + محاكي شاشة pyte."""
+    """A live ConPTY session + a pyte screen emulator."""
 
     data_ready = Signal()
     exited = Signal()
-    alt_screen_changed = Signal(bool)  # دخول/خروج الشاشة البديلة (TUI مثل كلود)
+    alt_screen_changed = Signal(bool)  # entering/leaving the alternate screen (a TUI like Claude)
 
     def __init__(self, cols, rows, command="powershell.exe"):
         super().__init__()
@@ -570,15 +570,15 @@ class PtyBackend(QObject):
         self.screen = pyte.HistoryScreen(cols, rows, history=5000, ratio=0.5)
         self.stream = pyte.Stream(self.screen)
         self._alive = True
-        self.alt_screen = False     # هل برنامج TUI ملء الشاشة نشط الآن؟
-        self._scan_tail = ""        # ذيل لالتقاط تسلسلٍ مقسوم بين قراءتين
-        self._carry = ""            # تسلسل ناقص محمول للقراءة التالية
-        # أزِل مفتاح API وهميّاً قصيراً (يكسر `claude` داخل الطرفيّة؛ الاشتراك يكفي)
+        self.alt_screen = False     # is a full-screen TUI program active now?
+        self._scan_tail = ""        # tail to catch a sequence split across two reads
+        self._carry = ""            # incomplete sequence carried to the next read
+        # remove a short fake API key (it breaks `claude` inside the terminal; the subscription is enough)
         env = dict(os.environ)
         key = env.get("ANTHROPIC_API_KEY", "")
         if key and len(key) < 40:
             env.pop("ANTHROPIC_API_KEY", None)
-        # قائمة لا سلسلة: يحفظ المسارات ذات المسافات (مثل Git Bash) كاملةً
+        # a list not a string: keeps paths with spaces (like Git Bash) intact
         spec = command if isinstance(command, list) else [command]
         self.proc = PtyProcess.spawn(spec, dimensions=(rows, cols), env=env)
         threading.Thread(target=self._reader, daemon=True).start()
@@ -589,10 +589,10 @@ class PtyBackend(QObject):
                 data = self.proc.read(16384)
                 if not data:
                     continue
-                self._scan_alt(data)                 # كشف الشاشة البديلة (على الخام)
+                self._scan_alt(data)                 # detect the alternate screen (on the raw data)
                 data = self._carry + data
-                data = KITTY_KB_RE.sub("", data)      # احذف 'u' المزعجة
-                # احمل أيّ تسلسل ناقص في آخر الدفعة للقراءة التالية (تفادي الانقسام)
+                data = KITTY_KB_RE.sub("", data)      # strip the stray 'u'
+                # carry any incomplete sequence at the end of the chunk to the next read (avoid splitting)
                 m = INCOMPLETE_TAIL_RE.search(data)
                 if m and m.group():
                     self._carry = data[m.start():]
@@ -614,13 +614,13 @@ class PtyBackend(QObject):
                 pass
 
     def _scan_alt(self, data):
-        """يكشف دخول/خروج الشاشة البديلة (?1049h/?1049l) لتفعيل وضع كلود تلقائيّاً."""
+        """Detects entering/leaving the alternate screen (?1049h/?1049l) to enable Claude mode automatically."""
         buf = self._scan_tail + data
         ih = buf.rfind("\x1b[?1049h")
         il = buf.rfind("\x1b[?1049l")
         new = self.alt_screen
         if ih >= 0 or il >= 0:
-            new = ih > il        # نشط إن كان آخر تبديلٍ هو الدخول
+            new = ih > il        # active if the last toggle was an enter
         self._scan_tail = buf[-8:]
         if new != self.alt_screen:
             self.alt_screen = new
@@ -635,11 +635,11 @@ class PtyBackend(QObject):
             pass
 
     def resize(self, cols, rows):
-        # ConPTY (conhost) يُعيد تدفّق محتواه ويرسم العرض تلقائيّاً عند تغيير الحجم
-        # (مؤكَّد بالتجربة + توثيق ResizePseudoConsole). الإبقاء على إعادة بثٍّ يدويّةٍ
-        # كان يُراكم تفتيت الأسطر وتكرارها عبر التكبيرات المتتالية. فنكتفي بتحجيم pyte
-        # في مكانه (يحفظ السجلّ والمؤشّر) ونترك ConPTY يُعيد الرسم — كما يفعل صانعو
-        # الطرفيّات. هذا هو السلوك نفسه في الشاشة البديلة (كلود) وفي العاديّة.
+        # ConPTY (conhost) reflows its content and repaints automatically on resize
+        # (confirmed by experiment + ResizePseudoConsole docs). Keeping a manual re-stream
+        # accumulated line fragmentation and duplication across successive zooms. So we just resize pyte
+        # in place (preserving history and cursor) and let ConPTY repaint - as terminal
+        # makers do. This is the same behavior in the alternate screen (Claude) and the normal one.
         with self.lock:
             try:
                 self.screen.resize(rows, cols)
@@ -672,39 +672,39 @@ class TerminalWidget(QWidget):
         self.rows = 32
         self.scroll_offset = 0
 
-        # حالة تحديد النصّ بالفأرة (إحداثيّات مطلقة في كامل السجلّ)
+        # mouse text-selection state (absolute coordinates across the whole history)
         self.sel_anchor = None   # (abs_line, col)
         self.sel_point = None
-        self._paint_start = 0    # أوّل سطر مطلق ظاهر في آخر رسمة
+        self._paint_start = 0    # first absolute line shown in the last paint
 
-        # وضع كلود: يعكس BiDi البصريّ لكلود ← منطقيّ. يتفعّل **تلقائيّاً** عند
-        # دخول كلود الشاشة البديلة، ويتوقّف عند العودة لـPowerShell.
-        # F2 يبدّل بين التلقائيّ واليدويّ عند الحاجة فقط.
+        # Claude mode: reverses Claude's visual BiDi to logical. Enabled **automatically** when
+        # Claude enters the alternate screen, and stops when returning to PowerShell.
+        # F2 toggles between auto and manual only when needed.
         self.claude_mode = False
         self.auto_follow = True
 
-        # حالة البحث (Ctrl+F): أسطر مطابِقة + المؤشّر الحاليّ
+        # search state (Ctrl+F): matching lines + the current index
         self.search_bar = None
         self.search_term = ""
-        self.search_matches = []   # أرقام الأسطر المطلقة المطابِقة
+        self.search_matches = []   # absolute line numbers that match
         self.search_idx = -1
 
-        # ذاكرة تخبئة للأسطر (مسار PowerShell) وللمقاطع (محرّك كلود الشبكيّ)
+        # caches for lines (PowerShell path) and for runs (Claude grid engine)
         self._layout_cache = {}
         self._run_cache = {}
 
-        # تقييد معدّل الرسم: نجمع دفقات كلود السريعة في رسمةٍ واحدة كلّ ~16ms
+        # throttle the paint rate: coalesce Claude's fast bursts into one paint every ~16ms
         self._repaint_timer = QTimer(self)
         self._repaint_timer.setSingleShot(True)
         self._repaint_timer.timeout.connect(self.update)
 
-        # وميض المؤشّر
+        # cursor blink
         self._blink = True
         self._blink_timer = QTimer(self)
         self._blink_timer.timeout.connect(self._toggle_blink)
         self._blink_timer.start(530)
 
-        # تأجيل التحجيم: لا نُحجّم إلّا بعد توقّف سحب الزاوية (~140ms)
+        # debounce resize: only resize after the corner drag stops (~140ms)
         self._resize_timer = QTimer(self)
         self._resize_timer.setSingleShot(True)
         self._resize_timer.timeout.connect(self._recompute_size)
@@ -724,7 +724,7 @@ class TerminalWidget(QWidget):
         self._exited = False
 
     def restart_with(self, command):
-        """يُغلق الصدفة الحاليّة ويُشغّل القسم بصدفةٍ جديدة (مع تصفير الحالة)."""
+        """Closes the current shell and restarts the pane with a new shell (resetting state)."""
         try:
             self.backend.data_ready.disconnect(self._on_data)
             self.backend.exited.disconnect(self._on_exit)
@@ -744,13 +744,13 @@ class TerminalWidget(QWidget):
         self.setFocus()
 
     def _session(self):
-        """يصعد إلى الجلسة (التبويب) الحاوية لهذا القسم."""
+        """Walks up to the session (tab) that contains this pane."""
         w = self.parentWidget()
         while w is not None and not isinstance(w, SessionWidget):
             w = w.parentWidget()
         return w
 
-    # ---- واجهة الإضافات ----
+    # ---- plugin API ----
     def send(self, text):
         self.backend.write(text)
 
@@ -763,7 +763,7 @@ class TerminalWidget(QWidget):
     def _init_font(self):
         _ensure_arabic_font()
         self.font = QFont()
-        # الخطّ المختار من الإعدادات أوّلاً، ثمّ سلسلة احتياط (تضمن تغطية العربيّة)
+        # the font chosen in settings first, then a fallback chain (ensures Arabic coverage)
         self.font.setFamilies([
             SETTINGS["font_family"], "JetBrains Mono", "Cascadia Mono",
             "Consolas", "Vazirmatn", "Amiri",
@@ -773,9 +773,9 @@ class TerminalWidget(QWidget):
         self.font.setHintingPreference(QFont.PreferFullHinting)
         fm = QFontMetrics(self.font)
         self.cw = max(1, fm.horizontalAdvance("M"))
-        self.line_pad = 4                        # تباعد رأسيّ للقراءة
+        self.line_pad = 4                        # vertical padding for readability
         self.ch = max(1, fm.height() + self.line_pad)
-        self._text_dy = self.line_pad // 2       # توسيط النصّ رأسيّاً
+        self._text_dy = self.line_pad // 2       # vertically center the text
         if hasattr(self, "_layout_cache"):
             self._layout_cache.clear()
             self._run_cache.clear()
@@ -797,10 +797,10 @@ class TerminalWidget(QWidget):
             self._blink = not self._blink
             self.update()
 
-    # ---------- إشارات المحرّك ----------
+    # ---------- backend signals ----------
     def _on_data(self):
-        self.scroll_offset = 0  # القفز إلى الأسفل عند وصول ناتج جديد
-        # تقييد: رسمةٌ واحدة كلّ ~16ms مهما تدفّقت الدفعات (يمنع البطء)
+        self.scroll_offset = 0  # jump to the bottom when new output arrives
+        # throttle: one paint every ~16ms no matter how fast bursts arrive (prevents slowdown)
         if not self._repaint_timer.isActive():
             self._repaint_timer.start(16)
 
@@ -808,9 +808,9 @@ class TerminalWidget(QWidget):
         self._exited = True
         self.update()
 
-    # ---------- القياس ----------
+    # ---------- sizing ----------
     def resizeEvent(self, event):
-        # لا نُحجّم فوراً مع كلّ حدث سحب — نؤجّل حتّى يتوقّف السحب
+        # don't resize on every drag event - debounce until the drag stops
         self._resize_timer.start(140)
         if self.search_bar and self.search_bar.isVisible():
             self._place_search_bar()
@@ -821,12 +821,12 @@ class TerminalWidget(QWidget):
         rows = max(5, self.height() // self.ch)
         if cols != self.cols or rows != self.rows:
             self.cols, self.rows = cols, rows
-            self._layout_cache.clear()   # عرض السطر تغيّر
+            self._layout_cache.clear()   # line width changed
             self._run_cache.clear()
             self.backend.resize(cols, rows)
             self._notify_status()
 
-    # ---------- الرسم ----------
+    # ---------- painting ----------
     def paintEvent(self, event):
         # A QPainter must always be ended, even if drawing raises — otherwise Qt
         # floods "QBackingStore::endPaint() called with active painter" every
@@ -849,7 +849,7 @@ class TerminalWidget(QWidget):
     def _paint(self, p):
         p.fillRect(self.rect(), BASE_BG)
         p.setFont(self.font)
-        p.setPen(BASE_FG)  # لون افتراضيّ لأسطر وضع كلود (بلا formats)
+        p.setPen(BASE_FG)  # default color for Claude-mode lines (no formats)
         self._row_layouts = {}
 
         with self.backend.lock:
@@ -867,15 +867,15 @@ class TerminalWidget(QWidget):
 
             for yi, row in enumerate(visible):
                 if self.claude_mode:
-                    self._draw_row_grid(p, yi, row, ncols)   # محرّك شبكيّ
+                    self._draw_row_grid(p, yi, row, ncols)   # grid engine
                 else:
-                    self._draw_row(p, yi, row, ncols)         # مسار PowerShell
+                    self._draw_row(p, yi, row, ncols)         # PowerShell path
 
-            # المؤشّر (فقط في القاع، حيث visible = الشاشة الحيّة)
+            # cursor (only at the bottom, where visible = the live screen)
             if self.scroll_offset == 0 and not cur_hidden:
                 cy = cur_y * self.ch
                 cx = cur_x * self.cw
-                if not self.claude_mode:   # المحرّك الشبكيّ مرصوصٌ على الخلايا أصلاً
+                if not self.claude_mode:   # the grid engine is already cell-aligned
                     lay = self._row_layouts.get(cur_y)
                     if lay is not None:
                         try:
@@ -885,18 +885,18 @@ class TerminalWidget(QWidget):
                             pass
                 crect = QRect(int(cx), cy, self.cw, self.ch)
                 if self.hasFocus():
-                    if self._blink:                       # كتلة وامضة عند التركيز
+                    if self._blink:                       # blinking block when focused
                         cc = QColor(BASE_FG)
                         cc.setAlpha(200)
                         p.fillRect(crect, cc)
-                else:                                     # إطارٌ عند عدم التركيز
+                else:                                     # outline when not focused
                     pen = QPen(BASE_FG)
                     pen.setWidth(1)
                     p.setPen(pen)
                     p.setBrush(Qt.NoBrush)
                     p.drawRect(crect.adjusted(0, 0, -1, -1))
 
-            # تظليل التحديد (فوق النصّ، شفّاف)
+            # selection highlight (over the text, translucent)
             sel = self._norm_sel()
             if sel:
                 (lo_l, lo_c), (hi_l, hi_c) = sel
@@ -911,7 +911,7 @@ class TerminalWidget(QWidget):
                         p.fillRect(QRect(c0 * self.cw, yi * self.ch,
                                          (c1 - c0) * self.cw, self.ch), sel_color)
 
-            # تظليل نتائج البحث (السطر المطابِق كاملاً؛ الحاليّ أقوى)
+            # search-result highlight (the whole matching line; the current one stronger)
             if self.search_matches:
                 cur_L = (self.search_matches[self.search_idx]
                          if 0 <= self.search_idx < len(self.search_matches) else -1)
@@ -922,7 +922,7 @@ class TerminalWidget(QWidget):
                              else QColor(240, 200, 80, 60))
                         p.fillRect(QRect(0, yi * self.ch, self.width(), self.ch), c)
 
-        # شارة مرئيّة لوضع كلود (أعلى يمين)
+        # visible Claude-mode badge (top right)
         if self.claude_mode:
             label = i18n.t("badge.claude_auto") if self.auto_follow else i18n.t("badge.claude_manual")
             fm = QFontMetrics(self.font)
@@ -933,7 +933,7 @@ class TerminalWidget(QWidget):
             p.setPen(QColor("#ffffff"))
             p.drawText(QRect(bx, 4, tw, bh), Qt.AlignCenter, label)
 
-        # حدّ يميّز القسم المركَّز (عند التقسيم فقط)
+        # border marking the focused pane (only when split)
         if isinstance(self.parentWidget(), QSplitter):
             pen = QPen(QColor("#2ea043") if self.hasFocus() else QColor("#30363d"))
             pen.setWidth(2)
@@ -942,14 +942,14 @@ class TerminalWidget(QWidget):
             p.drawRect(1, 1, self.width() - 2, self.height() - 2)
 
     def _draw_row(self, p, yi, row, ncols):
-        """يرسم السطر كوحدةٍ عبر QTextLayout (تشكيل + BiDi صحيح)، مع تخبئة:
-        لا يُعاد بناء أيّ سطرٍ لم يتغيّر محتواه/نمطه (أداء)."""
+        """Draws the line as a unit via QTextLayout (shaping + correct BiDi), with caching:
+        a line whose content/style has not changed is not rebuilt (performance)."""
         y = yi * self.ch
-        # توقيع السطر (محتوى + نمط) رخيصٌ بلا كائنات Qt — مفتاح التخبئة
+        # the line signature (content + style) is cheap with no Qt objects - the cache key
         chars = []
         runs = []
         cur = None
-        rstart = 0          # بمواضع النصّ (لا الأعمدة) بسبب تخطّي خلايا الاستمرار
+        rstart = 0          # in text positions (not columns) because continuation cells are skipped
         col = 0
         while col < ncols:
             ch = row[col]
@@ -961,8 +961,8 @@ class TerminalWidget(QWidget):
                 cur = st
                 rstart = len(chars)
             chars.append(d)
-            # خليّة عريضة (إيموجي/CJK): تخطّ خليّة الاستمرار الفارغة بعدها
-            # فيُرسَم المحرف بعرضه الطبيعيّ (خليّتين) ولا تنزاح الأعمدة.
+            # wide cell (emoji/CJK): skip the empty continuation cell after it
+            # so the char is drawn at its natural width (two cells) and columns don't shift.
             if _char_width(d) == 2 and col + 1 < ncols and not row[col + 1].data:
                 col += 2
             else:
@@ -974,8 +974,8 @@ class TerminalWidget(QWidget):
             self._row_layouts[yi] = None
             return
 
-        # وضع كلود: حوّل السطر البصريّ المعكوس ← منطقيّ (يشمل الأسطر الإنجليزيّة
-        # ذات الجُزُر العربيّة) ليعيد Qt ترتيبه صحيحاً
+        # Claude mode: convert the reversed visual line to logical (includes English lines
+        # with Arabic islands) so Qt re-orders it correctly
         rtl_fixed = False
         if self.claude_mode:
             fixed = restore_bidi_line(text)
@@ -994,7 +994,7 @@ class TerminalWidget(QWidget):
         self._row_layouts[yi] = cached
 
     def _build_layout(self, text, runs):
-        """يبني QTextLayout مع تنسيقات الألوان (مرّةً واحدة لكلّ محتوى فريد)."""
+        """Builds a QTextLayout with color formats (once per unique content)."""
         layout = QTextLayout(text, self.font)
         opt = QTextOption()
         opt.setWrapMode(QTextOption.NoWrap)
@@ -1025,13 +1025,13 @@ class TerminalWidget(QWidget):
         layout.endLayout()
         return (layout, line)
 
-    # ===== المحرّك الشبكيّ (وضع كلود) =====
+    # ===== grid engine (Claude mode) =====
     def _draw_row_grid(self, p, yi, row, ncols):
-        """يرسم السطر مقطعاً مقطعاً مثبّتاً على شبكة الخلايا: كلّ عنصرٍ يبقى في
-        خليّته البصريّة (كما وضعه كلود) فلا تنزاح المحاذاة؛ ومقاطع العربيّة تُعكَس
-        إلى المنطقيّ وتُشكَّل داخل خلاياها فتتّصل الحروف. يجمع الفائدتين."""
+        """Draws the line run by run, pinned to the cell grid: each item stays in
+        its visual cell (as Claude placed it) so alignment does not shift; Arabic runs are reversed
+        to logical and shaped within their cells so letters join. Combines both benefits."""
         y = yi * self.ch
-        # اجمع الخلايا بترتيبها البصريّ مع أعمدتها (وتخطّ خلايا الاستمرار العريضة)
+        # collect cells in visual order with their columns (skipping wide continuation cells)
         cells = []
         c = 0
         while c < ncols:
@@ -1042,7 +1042,7 @@ class TerminalWidget(QWidget):
             c += 2 if wide else 1
         if not any(d.strip() for (_, d, _, _) in cells):
             return
-        # جمّع الخلايا المتتالية في مقاطع حسب (عربيّ؟ ، النمط)
+        # group consecutive cells into runs by (is-Arabic?, style)
         n = len(cells)
         i = 0
         while i < n:
@@ -1057,7 +1057,7 @@ class TerminalWidget(QWidget):
             col_end = cells[j - 1][0] + cells[j - 1][3]
             text = "".join(chars)
             if is_ar:
-                text = text[::-1]   # بصريّ كلود ← منطقيّ للتشكيل
+                text = text[::-1]   # Claude visual -> logical for shaping
             self._draw_run(p, col_start * self.cw, y,
                            (col_end - col_start) * self.cw, text, st0, is_ar)
             i = j
@@ -1099,12 +1099,12 @@ class TerminalWidget(QWidget):
             self._run_cache[key] = cached
         layout, line = cached
         natw = line.naturalTextWidth()
-        # العربيّة (RTL) تُحاذى يمين صندوقها؛ غيرها يسار
+        # Arabic (RTL) is right-aligned in its box; others left
         dx = (x0 + boxw - natw) if is_ar else x0
         p.setPen(fg)
         layout.draw(p, QPointF(dx, y + self._text_dy))
 
-    # ---------- الإدخال ----------
+    # ---------- input ----------
     def keyPressEvent(self, event: QKeyEvent):
         if self._exited:
             return
@@ -1116,48 +1116,48 @@ class TerminalWidget(QWidget):
         win = self.window()
         sess = self._session()
 
-        # اختصارات الإضافات (لها الأولويّة)
+        # plugin keybindings (take priority)
         if run_plugin_keybind(self, ctrl, alt, shift, key):
             return
-        # لوحة الأوامر: Ctrl+Shift+P
+        # command palette: Ctrl+Shift+P
         if ctrl and shift and key == Qt.Key_P:
             if hasattr(win, "command_palette"):
                 win.command_palette()
             return
-        # كلّ الاختصارات: F1
+        # all shortcuts: F1
         if key == Qt.Key_F1:
             if hasattr(win, "show_shortcuts"):
                 win.show_shortcuts()
             return
 
-        # ----- التبويبات -----
-        if ctrl and key == Qt.Key_T:                  # تبويب جديد
+        # ----- tabs -----
+        if ctrl and key == Qt.Key_T:                  # new tab
             if hasattr(win, "new_tab"):
                 win.new_tab()
             return
-        if ctrl and key == Qt.Key_Tab:                # التبويب التالي
+        if ctrl and key == Qt.Key_Tab:                # next tab
             if hasattr(win, "next_tab"):
                 win.next_tab()
             return
-        if ctrl and key == Qt.Key_Backtab:            # Ctrl+Shift+Tab: السابق
+        if ctrl and key == Qt.Key_Backtab:            # Ctrl+Shift+Tab: previous
             if hasattr(win, "prev_tab"):
                 win.prev_tab()
             return
 
-        # ----- التقسيم والتنقّل (داخل الجلسة) -----
-        if ctrl and shift and key == Qt.Key_E:        # قسمان جنباً إلى جنب
+        # ----- split & navigation (within the session) -----
+        if ctrl and shift and key == Qt.Key_E:        # two panes side by side
             if sess:
                 sess.split_pane(self, Qt.Horizontal)
             return
-        if ctrl and shift and key == Qt.Key_O:        # قسمان فوق/تحت
+        if ctrl and shift and key == Qt.Key_O:        # two panes top/bottom
             if sess:
                 sess.split_pane(self, Qt.Vertical)
             return
-        if ctrl and shift and key == Qt.Key_N:        # محرّر جنب الطرفيّة
+        if ctrl and shift and key == Qt.Key_N:        # editor beside the terminal
             if sess:
                 sess.split_pane(self, Qt.Horizontal, factory=EditorWidget)
             return
-        if ctrl and shift and key == Qt.Key_W:        # إغلاق القسم
+        if ctrl and shift and key == Qt.Key_W:        # close pane
             if sess:
                 sess.close_pane(self)
             return
@@ -1166,39 +1166,39 @@ class TerminalWidget(QWidget):
                 sess.focus_dir(self, key)
             return
 
-        # تكبير/تصغير/إعادة ضبط الخطّ (للقسم المركَّز)
+        # zoom in/out/reset font (for the focused pane)
         if ctrl and key in (Qt.Key_Plus, Qt.Key_Equal):
             self.change_font(+1)
             return
         if ctrl and key == Qt.Key_Minus:
             self.change_font(-1)
             return
-        if ctrl and key == Qt.Key_0:            # إعادة الحجم الافتراضيّ
+        if ctrl and key == Qt.Key_0:            # reset to default size
             self.reset_font()
             return
 
-        # الإعدادات: Ctrl+,
+        # settings: Ctrl+,
         if ctrl and key == Qt.Key_Comma:
             if hasattr(win, "open_settings"):
                 win.open_settings()
             return
 
-        # البحث في المخرجات: Ctrl+F
+        # search the output: Ctrl+F
         if ctrl and key == Qt.Key_F:
             self._open_search()
             return
 
-        # F2: تبديل وضع كلود (عكس BiDi)
+        # F2: toggle Claude mode (BiDi reverse)
         if key == Qt.Key_F2:
             self.toggle_claude_mode()
             return
 
-        # نسخ: Ctrl+Shift+C
+        # copy: Ctrl+Shift+C
         if ctrl and shift and key == Qt.Key_C:
             self._copy_selection()
             return
 
-        # لصق: Ctrl+Shift+V
+        # paste: Ctrl+Shift+V
         if ctrl and shift and key == Qt.Key_V:
             txt = QApplication.clipboard().text()
             if txt:
@@ -1241,20 +1241,20 @@ class TerminalWidget(QWidget):
             if t:
                 seq = t
 
-        if self.sel_anchor is not None:   # امسح أيّ تحديد عالق عند الكتابة
+        if self.sel_anchor is not None:   # clear any stuck selection when typing
             self.sel_anchor = self.sel_point = None
         if seq:
             self.backend.write(seq)
-            self._blink = True            # المؤشّر صلبٌ فور الكتابة
+            self._blink = True            # cursor solid right when typing
 
-    # ---------- تحديد النصّ بالفأرة ----------
+    # ---------- mouse text selection ----------
     def _pos_to_cell(self, pos):
         yi = max(0, min(self.rows - 1, int(pos.y() // self.ch)))
         col = None
         lay = getattr(self, "_row_layouts", {}).get(yi)
         if lay is not None:
             try:
-                col = lay[1].xToCursor(float(pos.x()))  # عمود منطقيّ دقيق رغم BiDi
+                col = lay[1].xToCursor(float(pos.x()))  # exact logical column despite BiDi
             except Exception:
                 col = None
         if col is None:
@@ -1277,10 +1277,10 @@ class TerminalWidget(QWidget):
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.LeftButton and self._norm_sel():
-            self._copy_selection()  # نسخ تلقائيّ عند رفع الفأرة
+            self._copy_selection()  # auto-copy on mouse release
 
     def _norm_sel(self):
-        """يرجع ((lo_line,lo_col),(hi_line,hi_col)) مرتّباً، أو None إن لا تحديد."""
+        """Returns ((lo_line,lo_col),(hi_line,hi_col)) ordered, or None if no selection."""
         if self.sel_anchor is None or self.sel_point is None:
             return None
         a, b = self.sel_anchor, self.sel_point
@@ -1305,7 +1305,7 @@ class TerminalWidget(QWidget):
                     continue
                 row = all_lines[L]
                 if self.claude_mode:
-                    # في وضع كلود ننسخ السطر كاملاً منطقيّاً (العكس لا يقبل تجزئة الأعمدة)
+                    # in Claude mode we copy the whole line logically (reversal can't be split by columns)
                     full = self._full_row_text(row, ncols)
                     fixed = restore_bidi_line(full)
                     out.append((fixed if fixed is not None else full).rstrip())
@@ -1320,7 +1320,7 @@ class TerminalWidget(QWidget):
         return "\n".join(out)
 
     def _full_row_text(self, row, ncols):
-        """نصّ السطر كاملاً مع تخطّي خلايا استمرار المحارف العريضة (إيموجي)."""
+        """The whole line's text, skipping continuation cells of wide chars (emoji)."""
         chars = []
         col = 0
         while col < ncols:
@@ -1337,7 +1337,7 @@ class TerminalWidget(QWidget):
         if txt:
             QApplication.clipboard().setText(txt)
 
-    # ---------- البحث في المخرجات (Ctrl+F) ----------
+    # ---------- search the output (Ctrl+F) ----------
     def _line_logical_text(self, row, ncols):
         full = self._full_row_text(row, ncols)
         if self.claude_mode:
@@ -1373,7 +1373,7 @@ class TerminalWidget(QWidget):
             for L, row in enumerate(all_lines):
                 if tl in self._line_logical_text(row, ncols).lower():
                     self.search_matches.append(L)
-        # ابدأ من آخر مطابَقة (الأقرب للأسفل)
+        # start from the last match (closest to the bottom)
         self.search_idx = len(self.search_matches) - 1
         if self.search_matches:
             self._scroll_to_match()
@@ -1437,15 +1437,15 @@ class TerminalWidget(QWidget):
         w = self.window()
         if w is None:
             return
-        base = "EasyTer — طرفيّة عربيّة"
+        base = i18n.t("win.title")
         if self.claude_mode:
             tag = i18n.t("claude.tag_auto") if self.auto_follow else i18n.t("claude.tag_manual")
         else:
-            tag = "" if self.auto_follow else "  (يدويّ)"
+            tag = "" if self.auto_follow else i18n.t("win.title_manual")
         w.setWindowTitle(base + tag)
 
     def _on_alt_screen(self, active):
-        """تفعيل/إيقاف وضع كلود تلقائيّاً مع دخول/خروج برنامج TUI ملء الشاشة."""
+        """Enable/disable Claude mode automatically as a full-screen TUI program enters/leaves."""
         if self.auto_follow:
             self.claude_mode = active
             self._set_title()
@@ -1455,7 +1455,7 @@ class TerminalWidget(QWidget):
             PLUGINS.emit("claude_detected", self)
 
     def toggle_claude_mode(self):
-        # F2: إن كنّا تلقائيّين انتقل ليدويّ واقلب الحالة؛ وإلّا ارجع للتلقائيّ
+        # F2: if auto, switch to manual and flip the state; otherwise go back to auto
         if self.auto_follow:
             self.auto_follow = False
             self.claude_mode = not self.claude_mode
@@ -1479,14 +1479,14 @@ class TerminalWidget(QWidget):
         act_claude = menu.addAction(
             i18n.t("claude.toggle_off") if self.claude_mode else i18n.t("claude.toggle_on"))
         menu.addSeparator()
-        # تبديل الصدفة (يُعيد تشغيل هذا القسم)
+        # switch shell (restarts this pane)
         shell_menu = menu.addMenu(i18n.t("menu.shell"))
         shell_acts = {}
         for name, cmd in available_shells():
             a = shell_menu.addAction(("● " if cmd == self.command else "    ") + name)
             shell_acts[a] = cmd
         menu.addSeparator()
-        # التقسيم
+        # split
         act_split_h = menu.addAction(i18n.t("menu.split_h"))
         act_split_v = menu.addAction(i18n.t("menu.split_v"))
         act_editor = menu.addAction(i18n.t("menu.editor"))
@@ -1522,9 +1522,9 @@ class TerminalWidget(QWidget):
         delta = event.angleDelta().y()
         if delta == 0:
             return
-        # في الشاشة البديلة (كلود/TUI): مرّر العجلة إلى البرنامج ليمرّر محتواه بنفسه
+        # in the alternate screen (Claude/TUI): pass the wheel to the program so it scrolls itself
         if self.backend.alt_screen:
-            btn = 64 if delta > 0 else 65   # 64=أعلى، 65=أسفل (SGR mouse)
+            btn = 64 if delta > 0 else 65   # 64=up, 65=down (SGR mouse)
             pos = event.position()
             col = max(1, int(pos.x() // self.cw) + 1)
             rowy = max(1, int(pos.y() // self.ch) + 1)
@@ -1532,7 +1532,7 @@ class TerminalWidget(QWidget):
             for _ in range(3):
                 self.backend.write(seq)
             return
-        # عاديّ (PowerShell): مرّر في سجلّ pyte
+        # normal (PowerShell): scroll within pyte's history
         with self.backend.lock:
             max_off = len(self.backend.screen.history.top)
         steps = int(delta / 120) * 3
@@ -1562,14 +1562,14 @@ class TerminalWidget(QWidget):
 
 
 class SettingsDialog(QDialog):
-    """لوحة تخصيص: الخطّ وحجمه، الخلفيّة ولون النصّ، وثيمات جاهزة."""
+    """Customization panel: font and size, background and text color, and ready themes."""
 
     def __init__(self, win):
         super().__init__(win)
         self.win = win
         self.bg = SETTINGS["bg"]
         self.fg = SETTINGS["fg"]
-        self.palette = dict(PALETTE)               # لوحة ANSI قابلة للتعديل الحرّ
+        self.palette = dict(PALETTE)               # freely editable ANSI palette
         self.opacity = SETTINGS.get("opacity", 1.0)
         self._orig_opacity = self.opacity
         self._orig_bg = SETTINGS["bg"]
@@ -1611,7 +1611,7 @@ class SettingsDialog(QDialog):
         self.fg_btn.clicked.connect(self._pick_fg)
         g.addWidget(self.fg_btn, 3, 1)
 
-        # الشفافيّة (معاينة حيّة أثناء السحب)
+        # opacity (live preview while dragging)
         g.addWidget(QLabel(i18n.t("settings.opacity")), 4, 0)
         op_row = QHBoxLayout()
         self.op_slider = QSlider(Qt.Horizontal)
@@ -1625,7 +1625,7 @@ class SettingsDialog(QDialog):
         opw.setLayout(op_row)
         g.addWidget(opw, 4, 1)
 
-        # ألوان ANSI (تعديل حرّ)
+        # ANSI colors (free editing)
         g.addWidget(QLabel(i18n.t("settings.ansi")), 5, 0)
         ansi_row = QHBoxLayout()
         ansi_row.setSpacing(4)
@@ -1649,7 +1649,7 @@ class SettingsDialog(QDialog):
         self.theme_combo.currentTextChanged.connect(self._on_theme_combo)
         g.addWidget(self.theme_combo, 6, 1)
 
-        # اللغة (تُطبَّق عند الإقلاع التالي)
+        # language (applied on next launch)
         g.addWidget(QLabel(i18n.t("settings.language")), 7, 0)
         lang_row = QHBoxLayout()
         self.lang_combo = QComboBox()
@@ -1708,7 +1708,7 @@ class SettingsDialog(QDialog):
         self.palette = {**DEFAULT_PALETTE, **pal} if pal else dict(DEFAULT_PALETTE)
         self._refresh_swatches()
         self._refresh_ansi()
-        # معاينة حيّة للثيم
+        # live theme preview
         SETTINGS["bg"], SETTINGS["fg"], SETTINGS["palette"] = self.bg, self.fg, self.palette
         apply_base_colors()
         self.win.apply_settings()
@@ -1716,7 +1716,7 @@ class SettingsDialog(QDialog):
     def _on_opacity(self, v):
         self.opacity = v / 100.0
         self.op_label.setText(f"{v}%")
-        self.win.setWindowOpacity(self.opacity)   # معاينة حيّة فوريّة
+        self.win.setWindowOpacity(self.opacity)   # instant live preview
 
     def _pick_ansi(self, key):
         c = QColorDialog.getColor(QColor(self.palette.get(key, "#ffffff")), self, i18n.t("dialog.pick_ansi", name=key))
@@ -1730,7 +1730,7 @@ class SettingsDialog(QDialog):
                             "border:1px solid #30363d;border-radius:4px;")
 
     def reject(self):
-        # تراجع عن كلّ المعاينات الحيّة (ثيم/ألوان/شفافيّة)
+        # revert all live previews (theme/colors/opacity)
         SETTINGS["bg"] = self._orig_bg
         SETTINGS["fg"] = self._orig_fg
         SETTINGS["palette"] = self._orig_palette
@@ -1746,7 +1746,7 @@ class SettingsDialog(QDialog):
         SETTINGS["fg"] = self.fg
         SETTINGS["palette"] = self.palette
         SETTINGS["opacity"] = self.opacity
-        SETTINGS["language"] = self.lang_combo.currentData()   # تُطبَّق عند الإقلاع التالي
+        SETTINGS["language"] = self.lang_combo.currentData()   # applied on next launch
         save_settings()
         apply_base_colors()
         self.win.apply_settings()
@@ -1754,7 +1754,7 @@ class SettingsDialog(QDialog):
 
 
 class SearchBar(QWidget):
-    """شريط بحثٍ يطفو أعلى يمين القسم: حقل + عدّاد + سابق/تالي/إغلاق."""
+    """A search bar floating at the pane's top-right: field + counter + prev/next/close."""
 
     def __init__(self, term):
         super().__init__(term)
@@ -1811,7 +1811,7 @@ class SearchBar(QWidget):
 
 
 class CodeHighlighter(QSyntaxHighlighter):
-    """تلوين صياغةٍ عامّ (C/C++/Python/JS…): كلمات مفتاحيّة، نصوص، تعليقات، أرقام."""
+    """Generic syntax highlighting (C/C++/Python/JS...): keywords, strings, comments, numbers."""
 
     KEYWORDS = (
         "int float double char void bool long short unsigned signed const static "
@@ -1850,14 +1850,14 @@ class CodeHighlighter(QSyntaxHighlighter):
         for rx, f in self.rules:
             for m in rx.finditer(text):
                 self.setFormat(m.start(), m.end() - m.start(), f)
-        # سطر يبدأ بـ# : موجّه معالج (برتقاليّ) أو تعليق بايثون (أخضر)
+        # a line starting with # : a preprocessor directive (orange) or a Python comment (green)
         stripped = text.lstrip()
         if stripped.startswith("#"):
             indent = len(text) - len(stripped)
             w = re.match(r"#\s*(\w+)", stripped)
             f = self.preproc_fmt if (w and w.group(1) in self.PREPROC) else self.comment_fmt
             self.setFormat(indent, len(stripped), f)
-        # تعليقات الكتلة /* */ (عبر الأسطر)
+        # block comments /* */ (across lines)
         self.setCurrentBlockState(0)
         start = 0 if self.previousBlockState() == 1 else text.find("/*")
         while start >= 0:
@@ -1872,7 +1872,7 @@ class CodeHighlighter(QSyntaxHighlighter):
 
 
 class LineNumberArea(QWidget):
-    """شريط أرقام الأسطر على يسار المحرّر."""
+    """The line-number strip on the left of the editor."""
 
     def __init__(self, editor):
         super().__init__(editor)
@@ -1883,7 +1883,7 @@ class LineNumberArea(QWidget):
 
 
 class CodeEdit(QPlainTextEdit):
-    """محرّر النصّ الداخليّ؛ يمرّر الاختصارات الخاصّة إلى EditorWidget."""
+    """The inner text editor; forwards special shortcuts to EditorWidget."""
 
     def __init__(self, owner):
         super().__init__()
@@ -1948,12 +1948,12 @@ class CodeEdit(QPlainTextEdit):
 
 
 class EditorWidget(QWidget):
-    """محرّر ملفّاتٍ مدمج كقسمٍ في شجرة التقسيم (فتح/حفظ، عربيّ، بنفس الثيم)."""
+    """A file editor embedded as a pane in the split tree (open/save, Arabic, same theme)."""
 
     def __init__(self, path=None, title=None):
         super().__init__()
         self.path = None
-        self.custom_title = title       # عنوانٌ يدويّ (نقر مزدوج على الترويسة)
+        self.custom_title = title       # manual title (double-click the header)
         v = QVBoxLayout(self)
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(0)
@@ -2028,7 +2028,7 @@ class EditorWidget(QWidget):
         elif self.path:
             name = os.path.basename(self.path)
         else:
-            name = "بلا عنوان"
+            name = i18n.t("editor.untitled")
         dot = "● " if self.edit.document().isModified() else ""
         self.header.setText(f"  ✎ {dot}{name}")
 
@@ -2044,7 +2044,7 @@ class EditorWidget(QWidget):
             self.path = path
             self.edit.document().setModified(False)
         except Exception as ex:
-            self.edit.setPlainText(f"# تعذّر فتح الملفّ: {ex}")
+            self.edit.setPlainText(i18n.t("editor.open_failed", ex=ex))
         self._update_header()
 
     def save(self):
@@ -2110,7 +2110,7 @@ class EditorWidget(QWidget):
 
 
 def serialize_node(widget):
-    """يحوّل شجرة القسم (QSplitter/TerminalWidget) إلى بنية قابلة للحفظ."""
+    """Converts the pane tree (QSplitter/TerminalWidget) into a savable structure."""
     if isinstance(widget, QSplitter):
         return {
             "type": "split",
@@ -2126,7 +2126,7 @@ def serialize_node(widget):
 
 
 def build_node(node):
-    """يبني شجرة القسم من بنيةٍ محفوظة."""
+    """Builds the pane tree from a saved structure."""
     if not node:
         return TerminalWidget()
     if node.get("type") == "term":
@@ -2146,7 +2146,7 @@ def build_node(node):
 
 
 class SessionWidget(QWidget):
-    """جلسة = محتوى تبويبٍ واحد: شجرة طرفيّاتٍ قابلة للتقسيم (طوليّ/عرضيّ)."""
+    """A session = one tab's content: a splittable tree of terminals (vertical/horizontal)."""
 
     def __init__(self, tree=None):
         super().__init__()
@@ -2162,7 +2162,7 @@ class SessionWidget(QWidget):
         return self.findChildren(TerminalWidget)
 
     def _all_panes(self):
-        """كلّ الأقسام: طرفيّات ومحرّرات."""
+        """All panes: terminals and editors."""
         return self.findChildren(TerminalWidget) + self.findChildren(EditorWidget)
 
     def close_all(self):
@@ -2193,7 +2193,7 @@ class SessionWidget(QWidget):
 
     def close_pane(self, pane):
         if len(self._all_panes()) <= 1:
-            # آخر قسمٍ في الجلسة → أغلق التبويب كاملاً
+            # last pane in the session -> close the whole tab
             mw = self.window()
             if hasattr(mw, "close_tab_for"):
                 mw.close_tab_for(self)
@@ -2286,7 +2286,7 @@ SHORTCUTS = [
 
 
 class HelpDialog(QDialog):
-    """قائمة كلّ الاختصارات (F1 أو زرّ ؟)."""
+    """A list of all shortcuts (F1 or the ? button)."""
 
     def __init__(self, win):
         super().__init__(win)
@@ -2322,11 +2322,11 @@ class HelpDialog(QDialog):
 
 
 class MainWindow(QWidget):
-    """نافذة بتبويبات؛ كلّ تبويب جلسةٌ قابلة للتقسيم.
+    """A tabbed window; each tab is a splittable session.
 
-    اختصارات: Ctrl+T تبويب جديد · Ctrl+Tab/Ctrl+Shift+Tab تنقّل التبويبات ·
-    Ctrl+Shift+E/O تقسيم · Ctrl+Shift+W إغلاق قسم · Alt+أسهم تنقّل الأقسام ·
-    Ctrl+, الإعدادات.
+    Shortcuts: Ctrl+T new tab - Ctrl+Tab/Ctrl+Shift+Tab cycle tabs -
+    Ctrl+Shift+E/O split - Ctrl+Shift+W close pane - Alt+Arrows move between panes -
+    Ctrl+, settings.
     """
 
     def __init__(self):
@@ -2338,7 +2338,7 @@ class MainWindow(QWidget):
         self.tabs.setDocumentMode(True)
         self.tabs.tabCloseRequested.connect(self.close_tab)
         self.tabs.tabBarDoubleClicked.connect(self._rename_tab)
-        # أزرار الزاوية: + تبويب جديد · ⚙ الإعدادات
+        # corner buttons: + new tab - settings
         corner = QWidget()
         ch = QHBoxLayout(corner)
         ch.setContentsMargins(0, 0, 4, 0)
@@ -2373,7 +2373,7 @@ class MainWindow(QWidget):
             "border-top:1px solid #30363d;")
         lay.addWidget(self.status)
         self._current_pane = None
-        if PLUGINS.status_segments:           # تحديث دوريّ لعناصر الحالة الديناميّة
+        if PLUGINS.status_segments:           # periodic refresh of dynamic status segments
             self._status_timer = QTimer(self)
             self._status_timer.timeout.connect(
                 lambda: self.update_status(self._current_pane))
@@ -2385,14 +2385,14 @@ class MainWindow(QWidget):
             self.new_tab()
 
     def _style_window(self):
-        c = ui_theme_colors()                 # كلّ ألوان الواجهة مشتقّة من الثيم
+        c = ui_theme_colors()                 # all UI colors derived from the theme
         bg, fg = c["bg"], c["fg"]
         pal = self.palette()
         pal.setColor(self.backgroundRole(), QColor(bg))
         self.setPalette(pal)
         self.setAutoFillBackground(True)
         qss = (
-            # شريط التبويبات
+            # tab bar
             f"QTabWidget::pane{{border:0;background:{bg};}}"
             f"QTabBar{{background:{c['chrome']};}}"
             f"QTabBar::tab{{background:{c['chrome2']};color:{c['dim']};"
@@ -2401,11 +2401,11 @@ class MainWindow(QWidget):
             f"QTabBar::tab:selected{{background:{bg};color:{fg};"
             f"border-bottom:2px solid {c['accent']};}}"
             f"QTabBar::tab:hover{{background:{c['hover']};}}"
-            # مقابض تقسيم الأقسام
+            # pane split handles
             f"QSplitter::handle{{background:{c['border']};}}"
             f"QSplitter::handle:horizontal{{width:1px;}}"
             f"QSplitter::handle:vertical{{height:1px;}}"
-            # أشرطة التمرير (المحرّر والحوارات)
+            # scroll bars (editor and dialogs)
             f"QScrollBar:vertical{{background:{c['chrome']};width:12px;margin:0;}}"
             f"QScrollBar::handle:vertical{{background:{c['border']};"
             f"border-radius:6px;min-height:24px;}}"
@@ -2414,14 +2414,14 @@ class MainWindow(QWidget):
             f"QScrollBar::handle:horizontal{{background:{c['border']};"
             f"border-radius:6px;min-width:24px;}}"
             f"QScrollBar::add-line,QScrollBar::sub-line{{height:0;width:0;}}"
-            # قوائم نقر اليمين
+            # right-click menus
             f"QMenu{{background:{c['chrome']};color:{fg};border:1px solid {c['border']};}}"
             f"QMenu::item:selected{{background:{c['accent']};color:{bg};}}"
             f"QMenu::separator{{height:1px;background:{c['border']};margin:4px 8px;}}"
-            # تلميحات
+            # tooltips
             f"QToolTip{{background:{c['chrome2']};color:{fg};border:1px solid {c['border']};}}"
         )
-        # نمط المحترفين (Python): @et.ui_style أو et.set_ui_style — يُطبَّق فوق المشتقّ
+        # power-user style (Python): @et.ui_style or et.set_ui_style - applied on top of the derived one
         extra = PLUGINS.ui_style
         if extra is not None:
             try:
@@ -2434,10 +2434,10 @@ class MainWindow(QWidget):
         self.status.setStyleSheet(
             f"color:{c['dim']};padding:3px 10px;background:{c['chrome']};"
             f"border-top:1px solid {c['border']};")
-        # الشفافيّة الموثوقة على ويندوز: شفافيّة النافذة كاملةً (يظهر سطح المكتب)
+        # reliable opacity on Windows: whole-window opacity (the desktop shows through)
         self.setWindowOpacity(SETTINGS.get("opacity", 1.0))
 
-    # ---------- إدارة التبويبات ----------
+    # ---------- tab management ----------
     def new_tab(self, tree=None, name=None, shell=None):
         if tree is None and shell:
             tree = {"type": "term", "command": shell}
@@ -2528,8 +2528,8 @@ class MainWindow(QWidget):
         if pane is None:
             base = ""
         elif isinstance(pane, EditorWidget):
-            name = os.path.basename(pane.path) if pane.path else "بلا عنوان"
-            base = f"  ✎ محرّر · {name}"
+            name = os.path.basename(pane.path) if pane.path else i18n.t("editor.untitled")
+            base = i18n.t("editor.header", name=name)
         else:
             shell = os.path.basename(str(pane.command))
             mode = i18n.t("status.claude") if pane.claude_mode else ""
@@ -2570,7 +2570,7 @@ class MainWindow(QWidget):
         edit.editingFinished.connect(finish)
         edit.show()
 
-    # ---- واجهة الإضافات ----
+    # ---- plugin API ----
     def command_palette(self):
         if not PLUGINS.commands:
             self.status.setText(i18n.t("palette.no_commands"))
@@ -2598,8 +2598,8 @@ class MainWindow(QWidget):
             w = w.parentWidget()
         return w
 
-    def open_text_editor(self, text, title="نصّ"):
-        """يفتح تبويب محرّرٍ يحوي نصّاً (للإضافات: عرض نتائج الويب مثلاً)."""
+    def open_text_editor(self, text, title="Text"):
+        """Opens an editor tab containing text (for plugins: showing web results, e.g.)."""
         s = SessionWidget({"type": "editor"})
         idx = self.tabs.addTab(s, title)
         self.tabs.setCurrentIndex(idx)
@@ -2642,10 +2642,10 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationName("EasyTer")
     load_settings()
-    i18n.set_language(SETTINGS.get("language", "en"))   # لغة الواجهة (en افتراضيّة)
-    load_themes()                       # ثيمات إضافيّة من ~/.easyter/themes/
+    i18n.set_language(SETTINGS.get("language", "en"))   # UI language (en default)
+    load_themes()                       # extra themes from ~/.easyter/themes/
     apply_base_colors()
-    load_plugins()                      # يسجّل اختصارات/أوامر/ثيمات/خطّافات الإضافات
+    load_plugins()                      # registers plugin keybindings/commands/themes/hooks
     win = MainWindow()
     win.show()
     PLUGINS.emit("startup", win)
