@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# EasyTer runtime / per-machine state (defaults ship in code)
+easyter_config.json
+easyter_session.json
+
+# Diagnostic logs
+*.log
+_easyter_stderr.log
+_easyter_stdout.log
+_easyter_paint_error.log
+_raw_debug.log
+_size_debug.log
+
+# Local backups / experiments (not part of the release)
+EasyTer_before_gridengine.py
+EasyTer_cmdrunner_backup.py
+easyterpro/
+
+# Internal design/plan docs (not for the public repo)
+docs/superpowers/
