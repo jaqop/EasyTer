@@ -42,7 +42,11 @@ vim…).
 
 ## التثبيت
 
+انقر نقراً مزدوجاً على **`install.bat`** — يعمل من أيّ مجلّد (ينتقل تلقائيّاً إلى
+مجلّده فيجد `requirements.txt` دائماً). أو يدويّاً من مجلّد المشروع:
+
 ```sh
+cd path\to\EasyTer
 pip install -r requirements.txt
 ```
 

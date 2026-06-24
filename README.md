@@ -44,7 +44,12 @@ WSL, Claude Code, vim, …).
 
 ## Install
 
+Double-click **`install.bat`** — it works from any folder (it switches to its own
+directory, so it always finds `requirements.txt`). Or do it manually from the
+project folder:
+
 ```sh
+cd path\to\EasyTer
 pip install -r requirements.txt
 ```
 
