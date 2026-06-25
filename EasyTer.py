@@ -3787,9 +3787,8 @@ class MainWindow(QWidget):
         SETTINGS["prompt_theme"] = path   # new tabs init oh-my-posh with this theme
         save_settings()
         # also apply live to open PowerShell terminals sitting at a prompt.
-        # Re-send the integration first so sessions started by an older build
-        # get the current (fixed) __et_set_prompt before it runs.
-        cmd = PS_SHELL_INTEGRATION + ";__et_set_prompt '%s'\r" % path.replace("'", "''")
+        # Call the helper the session already defined (no echoed function blob).
+        cmd = "__et_set_prompt '%s'\r" % path.replace("'", "''")
         for t in self.findChildren(TerminalWidget):
             cs = " ".join(t.command) if isinstance(t.command, list) else str(t.command)
             if ("powershell" in cs.lower() or "pwsh" in cs.lower()) and not t.backend.alt_screen:
