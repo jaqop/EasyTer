@@ -701,7 +701,7 @@ class PtyBackend(QObject):
     def _reader(self):
         try:
             while self._alive:
-                data = self.proc.read(16384)
+                data = self.proc.read(65536)   # bigger reads = fewer feed cycles on huge output
                 if not data:
                     continue
                 self._scan_alt(data)                 # detect the alternate screen (on the raw data)
@@ -2129,6 +2129,11 @@ class CodeHighlighter(QSyntaxHighlighter):
         ]
 
     def highlightBlock(self, text):
+        # Stay fast on large input: skip a very long single line, and turn
+        # highlighting off entirely once the document gets big (regex per block
+        # over a huge file is the usual cause of editor lag).
+        if len(text) > 5000 or self.document().characterCount() > 600000:
+            return
         for rx, f in self.rules:
             for m in rx.finditer(text):
                 self.setFormat(m.start(), m.end() - m.start(), f)
@@ -2170,7 +2175,8 @@ class CodeEdit(QPlainTextEdit):
     def __init__(self, owner):
         super().__init__()
         self.owner = owner
-        self.setLineWrapMode(QPlainTextEdit.NoWrap)
+        self.setLineWrapMode(QPlainTextEdit.NoWrap)   # no wrap = much faster on big files
+        self.setCenterOnScroll(True)                  # cheaper scrolling for large docs
         self._lna = LineNumberArea(self)
         self.blockCountChanged.connect(self._update_lna_width)
         self.updateRequest.connect(self._update_lna)
@@ -2322,7 +2328,13 @@ class EditorWidget(QWidget):
     def open_path(self, path):
         try:
             with open(path, encoding="utf-8", errors="replace") as fh:
-                self.edit.setPlainText(fh.read())
+                data = fh.read()
+            # disable repaints during the bulk insert: much faster for big files
+            self.edit.setUpdatesEnabled(False)
+            try:
+                self.edit.setPlainText(data)
+            finally:
+                self.edit.setUpdatesEnabled(True)
             self.path = path
             self.edit.document().setModified(False)
         except Exception as ex:
