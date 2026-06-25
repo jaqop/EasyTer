@@ -132,6 +132,7 @@ SETTINGS = {
     "shell_integration": True, # inject OSC 133 into PowerShell for command blocks
     "notify_on_finish": True,  # desktop notification when a long command finishes unfocused
     "quake_enabled": True,     # global hotkey (Ctrl+Alt+`) to summon/hide EasyTer from anywhere
+    "paste_protection": True,  # confirm before pasting multi-line / large clipboard text
 }
 
 
@@ -701,6 +702,7 @@ class PtyBackend(QObject):
         self.stream = pyte.Stream(self.screen)
         self._alive = True
         self.alt_screen = False     # is a full-screen TUI program active now?
+        self.bracketed_paste = False  # does the program want bracketed paste (?2004h)?
         self._scan_tail = ""        # tail to catch a sequence split across two reads
         self._carry = ""            # incomplete sequence carried to the next read
         # command blocks: each entry = [prompt_abs_line, exit_code_or_None],
@@ -808,6 +810,11 @@ class PtyBackend(QObject):
         new = self.alt_screen
         if ih >= 0 or il >= 0:
             new = ih > il        # active if the last toggle was an enter
+        # bracketed paste mode (?2004h/l): track so paste can be wrapped safely
+        bh = buf.rfind("\x1b[?2004h")
+        bl = buf.rfind("\x1b[?2004l")
+        if bh >= 0 or bl >= 0:
+            self.bracketed_paste = bh > bl
         self._scan_tail = buf[-8:]
         if new != self.alt_screen:
             self.alt_screen = new
@@ -1447,9 +1454,7 @@ class TerminalWidget(QWidget):
 
         # paste: Ctrl+Shift+V
         if ctrl and shift and key == Qt.Key_V:
-            txt = QApplication.clipboard().text()
-            if txt:
-                self.backend.write(txt.replace("\r\n", "\r").replace("\n", "\r"))
+            self._do_paste()
             return
 
         self.scroll_offset = 0
@@ -1731,9 +1736,29 @@ class TerminalWidget(QWidget):
         self.update()
 
     def _paste_clipboard(self):
+        self._do_paste()
+
+    def _do_paste(self):
+        """Paste the clipboard, with optional protection (confirm multi-line/large
+        pastes) and bracketed-paste wrapping so the shell won't auto-run lines."""
         txt = QApplication.clipboard().text()
-        if txt:
-            self.backend.write(txt.replace("\r\n", "\r").replace("\n", "\r"))
+        if not txt:
+            return
+        if SETTINGS.get("paste_protection", True) and ("\n" in txt.strip() or len(txt) > 2000):
+            from PySide6.QtWidgets import QMessageBox
+            lines = txt.count("\n") + (0 if txt.endswith("\n") else 1)
+            box = QMessageBox(self)
+            box.setWindowTitle(i18n.t("paste.title"))
+            box.setText(i18n.t("paste.warn", lines=lines, chars=len(txt)))
+            box.setStandardButtons(QMessageBox.Ok | QMessageBox.Cancel)
+            box.setDefaultButton(QMessageBox.Cancel)
+            if box.exec() != QMessageBox.Ok:
+                return
+        body = txt.replace("\r\n", "\r").replace("\n", "\r")
+        if self.backend.bracketed_paste:
+            self.backend.write("\x1b[200~" + body + "\x1b[201~")
+        else:
+            self.backend.write(body)
 
     def _select_all(self):
         with self.backend.lock:
