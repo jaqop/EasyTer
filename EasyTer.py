@@ -703,6 +703,7 @@ class PtyBackend(QObject):
     alt_screen_changed = Signal(bool)  # entering/leaving the alternate screen (a TUI like Claude)
     command_ended = Signal(object)     # a command finished (OSC 133 D); arg = exit code or None
     clipboard_set = Signal(str)        # a program set the clipboard via OSC 52
+    cwd_changed = Signal(str)          # working directory changed (for dynamic tab titles)
 
     def __init__(self, cols, rows, command="powershell.exe", start_cwd=None):
         super().__init__()
@@ -846,8 +847,9 @@ class PtyBackend(QObject):
         if cwd:
             cwd = cwd.strip().rstrip("\\/") or cwd.strip()
             try:
-                if os.path.isdir(cwd):
+                if os.path.isdir(cwd) and cwd != self.cwd:
                     self.cwd = cwd
+                    self.cwd_changed.emit(cwd)
             except Exception:
                 pass
 
@@ -975,6 +977,7 @@ class TerminalWidget(QWidget):
         self.backend.command_ended.connect(self._on_command_ended)
         self.backend.clipboard_set.connect(
             lambda txt: QApplication.clipboard().setText(txt))
+        self.backend.cwd_changed.connect(self._on_cwd_changed)
         self._cmd_started = None      # time the user submitted a command (for finish notify)
         self._exited = False
 
@@ -1062,6 +1065,11 @@ class TerminalWidget(QWidget):
     def _on_exit(self):
         self._exited = True
         self.update()
+
+    def _on_cwd_changed(self, cwd):
+        win = self.window()
+        if win is not None and hasattr(win, "set_dynamic_tab_title"):
+            win.set_dynamic_tab_title(self, os.path.basename(cwd) or cwd)
 
     def _on_command_ended(self, code):
         """Notify on the desktop when a long command finishes while EasyTer is
@@ -3032,6 +3040,7 @@ class MainWindow(QWidget):
         if tree is None and shell:
             tree = {"type": "term", "command": shell}
         s = SessionWidget(tree, start_cwd=cwd)
+        s._auto_title = name is None      # auto-named tabs follow the directory
         title = name or i18n.t("tab.default", n=self.tabs.count() + 1)
         idx = self.tabs.addTab(s, title)
         self.tabs.setCurrentIndex(idx)
@@ -3169,11 +3178,26 @@ class MainWindow(QWidget):
             txt = edit.text().strip()
             if txt:
                 self.tabs.setTabText(index, txt)
+                w = self.tabs.widget(index)
+                if isinstance(w, SessionWidget):
+                    w._auto_title = False   # stop dynamic titles from overriding
             edit.deleteLater()
 
         edit.returnPressed.connect(edit.clearFocus)
         edit.editingFinished.connect(finish)
         edit.show()
+
+    def set_dynamic_tab_title(self, pane, title):
+        """Update a tab's title from the pane's working directory, unless the
+        tab was renamed manually."""
+        w = pane.parentWidget()
+        while w is not None and not isinstance(w, SessionWidget):
+            w = w.parentWidget()
+        if not isinstance(w, SessionWidget) or not getattr(w, "_auto_title", False):
+            return                          # only auto-named tabs follow the directory
+        idx = self.tabs.indexOf(w)
+        if idx >= 0 and title:
+            self.tabs.setTabText(idx, title if len(title) <= 24 else title[:23] + "…")
 
     # ---- plugin API ----
     def command_palette(self):
@@ -3196,6 +3220,8 @@ class MainWindow(QWidget):
         idx = self.tabs.indexOf(session)
         if idx >= 0:
             self.tabs.setTabText(idx, title)
+            if isinstance(session, SessionWidget):
+                session._auto_title = False   # an explicit name isn't overridden
 
     def active_pane(self):
         w = QApplication.focusWidget()
