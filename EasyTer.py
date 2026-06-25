@@ -731,6 +731,29 @@ def line_to_ansi(row, ncols):
     return "".join(out).rstrip() + "\x1b[0m"
 
 
+class ReportingScreen(pyte.HistoryScreen):
+    """A HistoryScreen that answers the terminal's status queries.
+
+    pyte parses cursor-position reports (DSR, ``ESC[6n``) and device-attribute
+    requests (``ESC[c``) but routes the reply through ``write_process_input``,
+    which is a no-op by default. TUI programs built on Ink / Node readline —
+    Claude Code among them — send ``ESC[6n`` on startup and **block waiting for
+    the reply**; with no answer the program hangs and the terminal looks frozen.
+    We override the hook to write the reply back to the child process."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.pty_writer = None   # set by PtyBackend once the process exists
+
+    def write_process_input(self, data):
+        w = self.pty_writer
+        if w is not None:
+            try:
+                w(data)
+            except Exception:
+                pass
+
+
 class PtyBackend(QObject):
     """A live ConPTY session + a pyte screen emulator."""
 
@@ -745,7 +768,7 @@ class PtyBackend(QObject):
         super().__init__()
         self.lock = threading.Lock()
         hist = max(1000, int(SETTINGS.get("scrollback", 10000)))
-        self.screen = pyte.HistoryScreen(cols, rows, history=hist, ratio=0.5)
+        self.screen = ReportingScreen(cols, rows, history=hist, ratio=0.5)
         self.stream = pyte.Stream(self.screen)
         self._alive = True
         self.alt_screen = False     # is a full-screen TUI program active now?
@@ -797,6 +820,9 @@ class PtyBackend(QObject):
         if not (isinstance(start_dir, str) and os.path.isdir(start_dir)):
             start_dir = os.path.expanduser("~")
         self.proc = PtyProcess.spawn(spec, dimensions=(rows, cols), env=env, cwd=start_dir)
+        # let pyte answer cursor-position / device-attribute queries (see ReportingScreen):
+        # programs like Claude Code block on the reply, so route it back to the child.
+        self.screen.pty_writer = lambda d: self.write(d)
         threading.Thread(target=self._reader, daemon=True).start()
 
     def _reader(self):
@@ -1668,8 +1694,16 @@ class TerminalWidget(QWidget):
             self._copy_selection()
             return
 
-        # paste: Ctrl+Shift+V
-        if ctrl and shift and key == Qt.Key_V:
+        # Ctrl+C copies when there's a selection (Windows convention);
+        # otherwise it falls through and sends \x03 (interrupt) as usual.
+        if ctrl and not shift and key == Qt.Key_C and self._selection_text():
+            self._copy_selection()
+            self.sel_anchor = self.sel_point = None
+            self.update()
+            return
+
+        # paste: Ctrl+Shift+V (terminal standard) or Ctrl+V (Windows convention)
+        if ctrl and key == Qt.Key_V:
             self._do_paste()
             return
 
