@@ -63,6 +63,10 @@ URL_RE = re.compile(r"""https?://[^\s<>"'`)\]}]+""")
 # Shell-integration markers (OSC 133, FinalTerm/iTerm2): A=prompt start,
 # B=command start, C=output start, D[;exit]=command end. Used for command blocks.
 OSC133_RE = re.compile(r"\x1b\]133;([A-D])([^\x07\x1b]*)(?:\x07|\x1b\\)")
+# Working-directory reports: OSC 9;9 (Windows path) and OSC 7 (file:// URL).
+# Used so a new tab/split opens in the current tab's directory.
+OSC99_RE = re.compile(r'\x1b\]9;9;"?([^"\x07\x1b]+)"?(?:\x07|\x1b\\)')
+OSC7_RE = re.compile(r"\x1b\]7;file://[^/]*(/[^\x07\x1b]*)(?:\x07|\x1b\\)")
 # PowerShell shell-integration: wrap the existing prompt (oh-my-posh-safe) to emit
 # OSC 133 markers so command blocks work. Runs once, after the profile loads.
 PS_SHELL_INTEGRATION = (
@@ -70,7 +74,8 @@ PS_SHELL_INTEGRATION = (
     "$global:__ET_OP=$function:prompt;"
     "function global:prompt{"
     "$c=$global:LASTEXITCODE;if($null -eq $c){if($?){$c=0}else{$c=1}};"
-    "\"$([char]27)]133;D;$c$([char]7)$([char]27)]133;A$([char]7)\""
+    "\"$([char]27)]133;D;$c$([char]7)$([char]27)]133;A$([char]7)"
+    "$([char]27)]9;9;$($PWD.ProviderPath)$([char]7)\""
     "+(& $global:__ET_OP)+"
     "\"$([char]27)]133;B$([char]7)\"}}"
 )
@@ -696,7 +701,7 @@ class PtyBackend(QObject):
     alt_screen_changed = Signal(bool)  # entering/leaving the alternate screen (a TUI like Claude)
     command_ended = Signal(object)     # a command finished (OSC 133 D); arg = exit code or None
 
-    def __init__(self, cols, rows, command="powershell.exe"):
+    def __init__(self, cols, rows, command="powershell.exe", start_cwd=None):
         super().__init__()
         self.lock = threading.Lock()
         hist = max(1000, int(SETTINGS.get("scrollback", 10000)))
@@ -705,6 +710,7 @@ class PtyBackend(QObject):
         self._alive = True
         self.alt_screen = False     # is a full-screen TUI program active now?
         self.bracketed_paste = False  # does the program want bracketed paste (?2004h)?
+        self.cwd = None             # current working directory (from OSC 9;9 / OSC 7)
         self._scan_tail = ""        # tail to catch a sequence split across two reads
         self._carry = ""            # incomplete sequence carried to the next read
         # command blocks: each entry = [prompt_abs_line, exit_code_or_None],
@@ -725,11 +731,11 @@ class PtyBackend(QObject):
             has_cmd = any(a.lower() in ("-command", "-c", "-file", "-encodedcommand") for a in spec)
             if ("powershell" in exe or "pwsh" in exe) and not has_cmd:
                 spec = spec + ["-NoExit", "-Command", PS_SHELL_INTEGRATION]
-        # start the shell in a sensible directory (the home folder by default,
-        # or a user-chosen one) instead of inheriting whatever launched EasyTer
-        # (which is often C:\Windows\system32)
-        start_dir = SETTINGS.get("start_dir") or os.path.expanduser("~")
-        if not os.path.isdir(start_dir):
+        # start the shell in: the requested dir (new tab/split inherits the
+        # current tab's directory), else the configured start folder, else home —
+        # never inheriting whatever launched EasyTer (often C:\Windows\system32)
+        start_dir = start_cwd or SETTINGS.get("start_dir") or os.path.expanduser("~")
+        if not (isinstance(start_dir, str) and os.path.isdir(start_dir)):
             start_dir = os.path.expanduser("~")
         self.proc = PtyProcess.spawn(spec, dimensions=(rows, cols), env=env, cwd=start_dir)
         threading.Thread(target=self._reader, daemon=True).start()
@@ -741,6 +747,7 @@ class PtyBackend(QObject):
                 if not data:
                     continue
                 self._scan_alt(data)                 # detect the alternate screen (on the raw data)
+                self._scan_cwd(data)                 # track the working directory
                 data = self._carry + data
                 data = KITTY_KB_RE.sub("", data)      # strip the stray 'u'
                 # carry any incomplete sequence at the end of the chunk to the next read (avoid splitting)
@@ -822,6 +829,36 @@ class PtyBackend(QObject):
             self.alt_screen = new
             self.alt_screen_changed.emit(new)
 
+    def _scan_cwd(self, data):
+        """Track the working directory from OSC 9;9 (Windows path) or OSC 7 (URL)."""
+        if "\x1b]9;9;" not in data and "\x1b]7;" not in data:
+            return
+        cwd = None
+        for m in OSC99_RE.finditer(data):
+            cwd = m.group(1)
+        if cwd is None:
+            for m in OSC7_RE.finditer(data):
+                cwd = self._osc7_to_path(m.group(1))
+        if cwd:
+            cwd = cwd.strip().rstrip("\\/") or cwd.strip()
+            try:
+                if os.path.isdir(cwd):
+                    self.cwd = cwd
+            except Exception:
+                pass
+
+    @staticmethod
+    def _osc7_to_path(p):
+        try:
+            import urllib.parse
+            p = urllib.parse.unquote(p)
+        except Exception:
+            pass
+        m = re.match(r"^/([A-Za-z]):?(/.*)?$", p)   # /C:/Users or /c/Users -> C:\Users
+        if m:
+            return m.group(1) + ":" + (m.group(2) or "/").replace("/", "\\")
+        return p
+
     def write(self, text):
         if not self._alive:
             return
@@ -855,9 +892,10 @@ class PtyBackend(QObject):
 
 
 class TerminalWidget(QWidget):
-    def __init__(self, command=None):
+    def __init__(self, command=None, start_cwd=None):
         super().__init__()
         self.command = command or DEFAULT_SHELL
+        self._start_cwd = start_cwd      # open this shell in this dir (new tab/split)
         self.setFocusPolicy(Qt.StrongFocus)
         self.setAutoFillBackground(True)
 
@@ -913,7 +951,7 @@ class TerminalWidget(QWidget):
 
     def _start_backend(self, command):
         self.command = command
-        self.backend = PtyBackend(self.cols, self.rows, command=command)
+        self.backend = PtyBackend(self.cols, self.rows, command=command, start_cwd=self._start_cwd)
         self.backend.data_ready.connect(self._on_data)
         self.backend.exited.connect(self._on_exit)
         self.backend.alt_screen_changed.connect(self._on_alt_screen)
@@ -2625,11 +2663,11 @@ def build_node(node):
 class SessionWidget(QWidget):
     """A session = one tab's content: a splittable tree of terminals (vertical/horizontal)."""
 
-    def __init__(self, tree=None):
+    def __init__(self, tree=None, start_cwd=None):
         super().__init__()
         self.lay = QVBoxLayout(self)
         self.lay.setContentsMargins(8, 8, 8, 8)
-        self.lay.addWidget(build_node(tree) if tree else TerminalWidget())
+        self.lay.addWidget(build_node(tree) if tree else TerminalWidget(start_cwd=start_cwd))
 
     def root_widget(self):
         item = self.lay.itemAt(0)
@@ -2674,7 +2712,8 @@ class SessionWidget(QWidget):
             t.backend.close()
 
     def split_pane(self, pane, orientation, factory=None):
-        new_w = factory() if factory else TerminalWidget()
+        cwd = pane.backend.cwd if isinstance(pane, TerminalWidget) else None
+        new_w = factory() if factory else TerminalWidget(start_cwd=cwd)
         parent = pane.parentWidget()
         split = QSplitter(orientation)
         split.setHandleWidth(6)
@@ -2948,10 +2987,23 @@ class MainWindow(QWidget):
         self.setWindowOpacity(SETTINGS.get("opacity", 1.0))
 
     # ---------- tab management ----------
+    def _active_cwd(self):
+        """The working directory of the focused terminal (for new tabs/splits)."""
+        foc = QApplication.focusWidget()
+        if isinstance(foc, TerminalWidget) and foc.backend.cwd:
+            return foc.backend.cwd
+        cur = self.tabs.currentWidget()
+        if isinstance(cur, SessionWidget):
+            for t in cur._all_terms():
+                if t.backend.cwd:
+                    return t.backend.cwd
+        return None
+
     def new_tab(self, tree=None, name=None, shell=None):
+        cwd = self._active_cwd()
         if tree is None and shell:
             tree = {"type": "term", "command": shell}
-        s = SessionWidget(tree)
+        s = SessionWidget(tree, start_cwd=cwd)
         title = name or i18n.t("tab.default", n=self.tabs.count() + 1)
         idx = self.tabs.addTab(s, title)
         self.tabs.setCurrentIndex(idx)
