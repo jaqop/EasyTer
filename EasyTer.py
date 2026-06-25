@@ -73,6 +73,8 @@ OSC52_RE = re.compile(r"\x1b\]52;[cpqs0-7]*;([A-Za-z0-9+/=]+)(?:\x07|\x1b\\)")
 # PowerShell shell-integration: wrap the existing prompt (oh-my-posh-safe) to emit
 # OSC 133 markers so command blocks work. Runs once, after the profile loads.
 PS_SHELL_INTEGRATION = (
+    # __et_wrap: wrap the current prompt (oh-my-posh-safe) to emit OSC 133 + cwd.
+    "function global:__et_wrap{"
     "if(-not $global:__ET_SI){$global:__ET_SI=$true;"
     "$global:__ET_OP=$function:prompt;"
     "function global:prompt{"
@@ -80,7 +82,15 @@ PS_SHELL_INTEGRATION = (
     "\"$([char]27)]133;D;$c$([char]7)$([char]27)]133;A$([char]7)"
     "$([char]27)]9;9;$($PWD.ProviderPath)$([char]7)\""
     "+(& $global:__ET_OP)+"
-    "\"$([char]27)]133;B$([char]7)\"}}"
+    "\"$([char]27)]133;B$([char]7)\""
+    "}}};"
+    # __et_set_prompt: switch the oh-my-posh theme live, then re-wrap.
+    "function global:__et_set_prompt($cfg){"
+    "$global:__ET_SI=$false;$ErrorActionPreference='SilentlyContinue';"
+    "$s=if($global:__ET_SHELL){$global:__ET_SHELL}else{'powershell'};"
+    "oh-my-posh init $s --config $cfg|Invoke-Expression;"
+    "$ErrorActionPreference='Continue';__et_wrap};"
+    "__et_wrap"
 )
 
 DEFAULT_SHELL = "powershell.exe"
@@ -737,16 +747,15 @@ class PtyBackend(QObject):
             exe = spec[0].lower()
             has_cmd = any(a.lower() in ("-command", "-c", "-file", "-encodedcommand") for a in spec)
             if ("powershell" in exe or "pwsh" in exe) and not has_cmd:
-                setup = ""
+                # "powershell" init for Windows PowerShell 5.1, "pwsh" for 7+
+                init_shell = "pwsh" if "pwsh" in exe else "powershell"
+                setup = "$global:__ET_SHELL='%s'; " % init_shell
                 pt = SETTINGS.get("prompt_theme") or ""
                 if pt and os.path.exists(pt):   # chosen oh-my-posh prompt theme first
-                    # "powershell" init for Windows PowerShell 5.1, "pwsh" for 7+;
-                    # errors silenced (old PSReadLine rejects the pwsh key-handlers).
-                    init_shell = "pwsh" if "pwsh" in exe else "powershell"
-                    setup = ("$ErrorActionPreference='SilentlyContinue'; "
-                             "oh-my-posh init %s --config '%s' | Invoke-Expression; "
-                             "$ErrorActionPreference='Continue'; "
-                             % (init_shell, pt.replace("'", "''")))
+                    setup += ("$ErrorActionPreference='SilentlyContinue'; "
+                              "oh-my-posh init %s --config '%s' | Invoke-Expression; "
+                              "$ErrorActionPreference='Continue'; "
+                              % (init_shell, pt.replace("'", "''")))
                 spec = spec + ["-NoExit", "-Command", setup + PS_SHELL_INTEGRATION]
         # start the shell in: the requested dir (new tab/split inherits the
         # current tab's directory), else the configured start folder, else home —
@@ -3773,6 +3782,15 @@ class MainWindow(QWidget):
     def _apply_prompt_theme(self, path):
         SETTINGS["prompt_theme"] = path   # new tabs init oh-my-posh with this theme
         save_settings()
+        # also apply live to open PowerShell terminals sitting at a prompt
+        cmd = "__et_set_prompt '%s'\r" % path.replace("'", "''")
+        for t in self.findChildren(TerminalWidget):
+            cs = " ".join(t.command) if isinstance(t.command, list) else str(t.command)
+            if ("powershell" in cs.lower() or "pwsh" in cs.lower()) and not t.backend.alt_screen:
+                try:
+                    t.backend.write(cmd)
+                except Exception:
+                    pass
 
     def retranslate(self):
         """Re-apply UI text after a live language change (title + tooltips).
