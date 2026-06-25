@@ -102,8 +102,18 @@ PS_SHELL_INTEGRATION = (
     "$s=if($PSVersionTable.PSEdition -eq 'Core'){'pwsh'}else{'powershell'};"
     "& {oh-my-posh init $s --config $cfg|Invoke-Expression} 2>$null;"
     "$ErrorActionPreference='Continue';__et_wrap};"
+    # Bind F5 (no default PSReadLine action) to redraw the prompt in place. EasyTer
+    # sends this silently after a resize so oh-my-posh's right-aligned segment
+    # repositions to the new width without the user pressing Enter.
+    "try{if(Get-Command Set-PSReadLineKeyHandler -EA SilentlyContinue){"
+    "Set-PSReadLineKeyHandler -Chord 'F5' -ScriptBlock {"
+    "[Microsoft.PowerShell.PSConsoleReadLine]::InvokePrompt()}}}catch{};"
     "__et_wrap"
 )
+
+# VT sequence PSReadLine receives for the F5 key in a ConPTY (used to trigger the
+# prompt-redraw key handler defined in PS_SHELL_INTEGRATION).
+PS_REDRAW_KEY = "\x1b[15~"
 
 DEFAULT_SHELL = "powershell.exe"
 
@@ -738,6 +748,7 @@ class PtyBackend(QObject):
         self.stream = pyte.Stream(self.screen)
         self._alive = True
         self.alt_screen = False     # is a full-screen TUI program active now?
+        self.at_prompt = False      # idle at an interactive prompt (OSC 133 B, no command running)
         self.bracketed_paste = False  # does the program want bracketed paste (?2004h)?
         self.cwd = None             # current working directory (from OSC 9;9 / OSC 7)
         self._scan_tail = ""        # tail to catch a sequence split across two reads
@@ -834,6 +845,8 @@ class PtyBackend(QObject):
                     self.command_marks.append([abs_line, None])
                     if len(self.command_marks) > 2000:
                         del self.command_marks[:1000]
+                elif kind == "B":                   # prompt drawn, now waiting for input
+                    self.at_prompt = True
                 elif kind == "D":                           # the command just finished
                     code = None
                     if params:
@@ -916,6 +929,10 @@ class PtyBackend(QObject):
     def write(self, text):
         if not self._alive:
             return
+        # submitting a line (Enter) starts a command -> no longer idle at the
+        # prompt, until the next OSC 133 'B'. Skip while pasting bracketed text.
+        if "\r" in text and not self.bracketed_paste:
+            self.at_prompt = False
         try:
             self.proc.write(text)
         except Exception:
@@ -1142,6 +1159,21 @@ class TerminalWidget(QWidget):
             self._run_cache.clear()
             self.backend.resize(cols, rows)
             self._notify_status()
+            self._redraw_prompt_after_resize()
+
+    def _redraw_prompt_after_resize(self):
+        """Nudge PowerShell to redraw the prompt at the new width so oh-my-posh's
+        right-aligned segment repositions without the user pressing Enter. Only
+        when idle at an interactive PowerShell prompt (never mid-command/TUI)."""
+        b = self.backend
+        if b.alt_screen or not b.at_prompt:
+            return
+        cs = " ".join(self.command) if isinstance(self.command, list) else str(self.command)
+        if "powershell" in cs.lower() or "pwsh" in cs.lower():
+            try:
+                b.write(PS_REDRAW_KEY)
+            except Exception:
+                pass
 
     # ---------- painting ----------
     def paintEvent(self, event):
