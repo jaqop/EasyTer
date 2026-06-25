@@ -133,6 +133,7 @@ SETTINGS = {
     "notify_on_finish": True,  # desktop notification when a long command finishes unfocused
     "quake_enabled": True,     # global hotkey (Ctrl+Alt+`) to summon/hide EasyTer from anywhere
     "paste_protection": True,  # confirm before pasting multi-line / large clipboard text
+    "scrollback": 10000,       # lines of history kept per terminal
 }
 
 
@@ -698,7 +699,8 @@ class PtyBackend(QObject):
     def __init__(self, cols, rows, command="powershell.exe"):
         super().__init__()
         self.lock = threading.Lock()
-        self.screen = pyte.HistoryScreen(cols, rows, history=5000, ratio=0.5)
+        hist = max(1000, int(SETTINGS.get("scrollback", 10000)))
+        self.screen = pyte.HistoryScreen(cols, rows, history=hist, ratio=0.5)
         self.stream = pyte.Stream(self.screen)
         self._alive = True
         self.alt_screen = False     # is a full-screen TUI program active now?
