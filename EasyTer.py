@@ -135,7 +135,7 @@ def available_shells():
 
 from PySide6.QtCore import Qt, QObject, Signal, QRect, QPointF, QTimer
 from PySide6.QtGui import (
-    QFont, QFontMetrics, QPainter, QColor, QKeyEvent, QPen,
+    QFont, QFontMetrics, QFontMetricsF, QPainter, QColor, QKeyEvent, QPen,
     QTextLayout, QTextCharFormat, QTextOption, QFontDatabase, QSyntaxHighlighter,
     QPixmap, QIcon,
 )
@@ -1020,7 +1020,7 @@ class TerminalWidget(QWidget):
         self._exited = False
         self._start_backend(self.command)
 
-        self.resize(self.cols * self.cw, self.rows * self.ch)
+        self.resize(int(self.cols * self.cw), self.rows * self.ch)
 
     def _start_backend(self, command):
         self.command = command
@@ -1084,7 +1084,12 @@ class TerminalWidget(QWidget):
         self.font.setPointSize(self.font_size)
         self.font.setHintingPreference(QFont.PreferFullHinting)
         fm = QFontMetrics(self.font)
-        self.cw = max(1, fm.horizontalAdvance("M"))
+        # float cell width: the real advance of "M" is fractional (e.g. 9.344).
+        # using the int floor (9) made `cols = width // cw` overestimate the
+        # column count, so text overflowed/clipped past the right edge. keep the
+        # float for grid math, and a rounded int for pixel-snapped QRect widths.
+        self.cw = max(1.0, QFontMetricsF(self.font).horizontalAdvance("M"))
+        self._cwi = max(1, round(self.cw))
         self.line_pad = 4                        # vertical padding for readability
         self.ch = max(1, fm.height() + self.line_pad)
         self._text_dy = self.line_pad // 2       # vertically center the text
@@ -1151,7 +1156,7 @@ class TerminalWidget(QWidget):
         super().resizeEvent(event)
 
     def _recompute_size(self):
-        cols = max(20, self.width() // self.cw)
+        cols = max(20, int(self.width() / self.cw))
         rows = max(5, self.height() // self.ch)
         if cols != self.cols or rows != self.rows:
             self.cols, self.rows = cols, rows
@@ -1249,7 +1254,7 @@ class TerminalWidget(QWidget):
                             cx = rx[0] if isinstance(rx, (tuple, list)) else rx
                         except Exception:
                             pass
-                crect = QRect(int(cx), cy, self.cw, self.ch)
+                crect = QRect(int(cx), cy, self._cwi, self.ch)
                 if self.hasFocus():
                     if self._blink:                       # solid cursor when focused
                         cc = QColor(BASE_FG)
@@ -1258,7 +1263,7 @@ class TerminalWidget(QWidget):
                         if style == "bar":
                             p.fillRect(QRect(int(cx), cy, 2, self.ch), cc)
                         elif style == "underline":
-                            p.fillRect(QRect(int(cx), cy + self.ch - 2, self.cw, 2), cc)
+                            p.fillRect(QRect(int(cx), cy + self.ch - 2, self._cwi, 2), cc)
                         else:
                             p.fillRect(crect, cc)
                 else:                                     # outline when not focused
@@ -1277,7 +1282,7 @@ class TerminalWidget(QWidget):
                     p.setPen(pen)
                     p.setBrush(Qt.NoBrush)
                     p.drawRect(QRect(int(self.copy_cursor[1] * self.cw),
-                                     cyi * self.ch, self.cw, self.ch))
+                                     cyi * self.ch, self._cwi, self.ch))
 
             # command-block markers: a thin bar in the left gutter at each prompt
             # line (green = success, red = failure, grey = unknown/running)
@@ -1304,8 +1309,8 @@ class TerminalWidget(QWidget):
                     c0 = lo_c if L == lo_l else 0
                     c1 = hi_c if L == hi_l else ncols
                     if c1 > c0:
-                        p.fillRect(QRect(c0 * self.cw, yi * self.ch,
-                                         (c1 - c0) * self.cw, self.ch), sel_color)
+                        p.fillRect(QRect(int(c0 * self.cw), yi * self.ch,
+                                         int((c1 - c0) * self.cw), self.ch), sel_color)
 
             # search-result highlight (the whole matching line; the current one stronger)
             if self.search_matches:
@@ -3483,7 +3488,7 @@ class MainWindow(QWidget):
     Ctrl+, settings.
     """
 
-    def __init__(self):
+    def __init__(self, start_dir=None):
         super().__init__()
         self.broadcast = False           # when True, typing goes to every terminal pane
         self._closed_tabs = []           # stack of recently closed tabs for reopen
@@ -3537,7 +3542,10 @@ class MainWindow(QWidget):
         self.resize(1180, 720)
         self.setMinimumSize(520, 320)
         self._style_window()
-        if not self.restore_session():
+        # launched with a folder ("Open EasyTer here"): open one fresh tab there
+        if start_dir and os.path.isdir(start_dir):
+            self.new_tab(start_cwd=start_dir)
+        elif not self.restore_session():
             self.new_tab()
 
     def _style_window(self):
@@ -3606,8 +3614,8 @@ class MainWindow(QWidget):
                     return t.backend.cwd
         return None
 
-    def new_tab(self, tree=None, name=None, shell=None):
-        cwd = self._active_cwd()
+    def new_tab(self, tree=None, name=None, shell=None, start_cwd=None):
+        cwd = start_cwd or self._active_cwd()
         if tree is None and shell:
             tree = {"type": "term", "command": shell}
         s = SessionWidget(tree, start_cwd=cwd)
@@ -3954,7 +3962,13 @@ def main():
     load_themes()                       # extra themes from ~/.easyter/themes/
     apply_base_colors()
     load_plugins()                      # registers plugin keybindings/commands/themes/hooks
-    win = MainWindow()
+    # optional folder argument ("Open EasyTer here" / `EasyTer.py <dir>`)
+    start_dir = None
+    for arg in sys.argv[1:]:
+        if os.path.isdir(arg):
+            start_dir = os.path.abspath(arg)
+            break
+    win = MainWindow(start_dir=start_dir)
     win.show()
     PLUGINS.emit("startup", win)
     sys.exit(app.exec())
