@@ -2588,9 +2588,14 @@ def render_prompt_preview(theme_path):
     exe = shutil.which("oh-my-posh")
     if exe:
         try:
+            # Clear the session vars, otherwise oh-my-posh reuses the cached
+            # session config and ignores --config (every theme renders the same).
+            env = dict(os.environ)
+            env.pop("POSH_SESSION_ID", None)
+            env.pop("POSH_THEME", None)
             r = subprocess.run(
                 [exe, "print", "primary", "--config", theme_path, "--shell", "pwsh"],
-                capture_output=True, timeout=6,
+                capture_output=True, timeout=6, env=env,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
             out = r.stdout.decode("utf-8", "replace")
         except Exception:
