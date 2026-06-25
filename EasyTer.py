@@ -18,6 +18,7 @@ import re
 import shutil
 import sys
 import threading
+import webbrowser
 
 # Under pythonw.exe there is no console, so sys.stdout/sys.stderr are None. A stray
 # print() (e.g. from a caught startup error, a hook, or a plugin) would then raise and
@@ -54,6 +55,8 @@ def _char_width(d):
 KITTY_KB_RE = re.compile(r"\x1b\[[<>=?][0-9;]*u")
 # Incomplete CSI/ESC sequence at the end of a chunk (carried to the next read to avoid splitting)
 INCOMPLETE_TAIL_RE = re.compile(r"\x1b\[?[0-9;?<>=]*$")
+# Clickable links: match http(s) URLs in the visible text (Ctrl+click to open)
+URL_RE = re.compile(r"""https?://[^\s<>"'`)\]}]+""")
 
 DEFAULT_SHELL = "powershell.exe"
 
@@ -108,6 +111,7 @@ SETTINGS = {
     "bg_image": "",            # optional background image path ("" = none); user-chosen
     "bg_image_opacity": 0.35,  # how strongly the background image shows through (0..1)
     "start_dir": "",           # folder new shells open in ("" = home, never system32)
+    "cursor_style": "block",   # cursor shape: "block" | "bar" | "underline"
 }
 
 
@@ -820,7 +824,7 @@ class TerminalWidget(QWidget):
         self._resize_timer.setSingleShot(True)
         self._resize_timer.timeout.connect(self._recompute_size)
 
-        self.setMouseTracking(False)
+        self.setMouseTracking(True)   # needed for Ctrl+hover link hinting
         self._exited = False
         self._start_backend(self.command)
 
@@ -1005,10 +1009,16 @@ class TerminalWidget(QWidget):
                             pass
                 crect = QRect(int(cx), cy, self.cw, self.ch)
                 if self.hasFocus():
-                    if self._blink:                       # blinking block when focused
+                    if self._blink:                       # solid cursor when focused
                         cc = QColor(BASE_FG)
                         cc.setAlpha(200)
-                        p.fillRect(crect, cc)
+                        style = SETTINGS.get("cursor_style", "block")
+                        if style == "bar":
+                            p.fillRect(QRect(int(cx), cy, 2, self.ch), cc)
+                        elif style == "underline":
+                            p.fillRect(QRect(int(cx), cy + self.ch - 2, self.cw, 2), cc)
+                        else:
+                            p.fillRect(crect, cc)
                 else:                                     # outline when not focused
                     pen = QPen(BASE_FG)
                     pen.setWidth(1)
@@ -1285,6 +1295,14 @@ class TerminalWidget(QWidget):
             if sess:
                 sess.focus_dir(self, key)
             return
+        if ctrl and shift and key == Qt.Key_Z:        # maximize / restore this pane
+            if sess:
+                sess.toggle_zoom(self)
+            return
+        if ctrl and shift and key == Qt.Key_B:        # broadcast typing to all panes
+            if hasattr(win, "toggle_broadcast"):
+                win.toggle_broadcast()
+            return
 
         # zoom in/out/reset font (for the focused pane)
         if ctrl and key in (Qt.Key_Plus, Qt.Key_Equal):
@@ -1364,7 +1382,15 @@ class TerminalWidget(QWidget):
         if self.sel_anchor is not None:   # clear any stuck selection when typing
             self.sel_anchor = self.sel_point = None
         if seq:
-            self.backend.write(seq)
+            win = self.window()
+            if getattr(win, "broadcast", False):   # type once -> all terminals
+                for t in win.findChildren(TerminalWidget):
+                    try:
+                        t.backend.write(seq)
+                    except Exception:
+                        pass
+            else:
+                self.backend.write(seq)
             self._blink = True            # cursor solid right when typing
 
     # ---------- mouse text selection ----------
@@ -1383,8 +1409,34 @@ class TerminalWidget(QWidget):
         abs_line = self._paint_start + yi
         return abs_line, col
 
+    def _url_at(self, pos):
+        """Return the http(s) URL under the mouse position, or None."""
+        if not hasattr(self, "_row_layouts"):
+            return None
+        abs_line, col = self._pos_to_cell(pos)
+        with self.backend.lock:
+            screen = self.backend.screen
+            all_lines = list(screen.history.top) + [screen.buffer[y] for y in range(screen.lines)]
+            if abs_line < 0 or abs_line >= len(all_lines):
+                return None
+            row = all_lines[abs_line]
+            ncols = screen.columns
+            text = "".join((row[c].data if row[c].data else " ") for c in range(ncols))
+        for m in URL_RE.finditer(text):
+            if m.start() <= col < m.end():
+                return m.group(0)
+        return None
+
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
+            if event.modifiers() & Qt.ControlModifier:   # Ctrl+click opens a link
+                url = self._url_at(event.position())
+                if url:
+                    try:
+                        webbrowser.open(url)
+                    except Exception:
+                        pass
+                    return
             self.setFocus()
             self.sel_anchor = self._pos_to_cell(event.position())
             self.sel_point = self.sel_anchor
@@ -1394,6 +1446,10 @@ class TerminalWidget(QWidget):
         if event.buttons() & Qt.LeftButton and self.sel_anchor is not None:
             self.sel_point = self._pos_to_cell(event.position())
             self.update()
+        elif (event.modifiers() & Qt.ControlModifier) and self._url_at(event.position()):
+            self.setCursor(Qt.PointingHandCursor)   # hint a clickable link
+        else:
+            self.unsetCursor()
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.LeftButton and self._norm_sel():
@@ -1830,8 +1886,18 @@ class SettingsDialog(QDialog):
         sdw.setLayout(sd_row)
         g.addWidget(sdw, 9, 1)
 
+        # cursor shape
+        g.addWidget(QLabel(i18n.t("settings.cursor")), 10, 0)
+        self.cursor_combo = QComboBox()
+        self.cursor_combo.addItem(i18n.t("cursor.block"), "block")
+        self.cursor_combo.addItem(i18n.t("cursor.bar"), "bar")
+        self.cursor_combo.addItem(i18n.t("cursor.underline"), "underline")
+        ci = self.cursor_combo.findData(SETTINGS.get("cursor_style", "block"))
+        self.cursor_combo.setCurrentIndex(ci if ci >= 0 else 0)
+        g.addWidget(self.cursor_combo, 10, 1)
+
         # language (applies immediately)
-        g.addWidget(QLabel(i18n.t("settings.language")), 10, 0)
+        g.addWidget(QLabel(i18n.t("settings.language")), 11, 0)
         lang_row = QHBoxLayout()
         self.lang_combo = QComboBox()
         self.lang_combo.addItem("English", "en")
@@ -1842,7 +1908,7 @@ class SettingsDialog(QDialog):
         lang_row.addWidget(QLabel(i18n.t("settings.language_note")))
         lw = QWidget()
         lw.setLayout(lang_row)
-        g.addWidget(lw, 10, 1)
+        g.addWidget(lw, 11, 1)
 
         # fixed button bar below the scroll area (always visible)
         btns = QHBoxLayout()
@@ -1961,6 +2027,7 @@ class SettingsDialog(QDialog):
         SETTINGS["bg_image"] = self.bg_image
         SETTINGS["bg_image_opacity"] = self.bg_image_opacity
         SETTINGS["start_dir"] = self.start_dir
+        SETTINGS["cursor_style"] = self.cursor_combo.currentData()
         save_settings()
         i18n.set_language(SETTINGS["language"])   # live: menus/dialogs/shortcuts switch on next open
         apply_base_colors()
@@ -2380,6 +2447,19 @@ class SessionWidget(QWidget):
         """All panes: terminals and editors."""
         return self.findChildren(TerminalWidget) + self.findChildren(EditorWidget)
 
+    def toggle_zoom(self, pane):
+        """Maximize this pane (hide its siblings) or restore the split layout."""
+        if getattr(self, "_zoom_hidden", None):
+            for w in self._zoom_hidden:
+                w.setVisible(True)
+            self._zoom_hidden = []
+        else:
+            self._zoom_hidden = [p for p in self._all_panes() if p is not pane]
+            for p in self._zoom_hidden:
+                p.setVisible(False)
+        pane.setVisible(True)
+        pane.setFocus()
+
     def close_all(self):
         for t in self.findChildren(TerminalWidget):
             t.backend.close()
@@ -2474,6 +2554,8 @@ SHORTCUTS = [
         ("sck.split.close", "sc.split.close"),
         ("sck.split.nav", "sc.split.nav"),
         ("sck.split.resize", "sc.split.resize"),
+        ("sck.split.zoom", "sc.split.zoom"),
+        ("sck.split.broadcast", "sc.split.broadcast"),
     ]),
     ("sc.cat.clip", [
         ("sck.clip.copypaste", "sc.clip.copypaste"),
@@ -2481,6 +2563,7 @@ SHORTCUTS = [
         ("sck.clip.rightclick", "sc.clip.rightclick"),
         ("sck.clip.search", "sc.clip.search"),
         ("sck.clip.wheel", "sc.clip.wheel"),
+        ("sck.clip.link", "sc.clip.link"),
     ]),
     ("sc.cat.arabic", [
         ("sck.arabic.f2", "sc.arabic.f2"),
@@ -2546,6 +2629,7 @@ class MainWindow(QWidget):
 
     def __init__(self):
         super().__init__()
+        self.broadcast = False           # when True, typing goes to every terminal pane
         self.setWindowTitle(i18n.t("win.title"))
         self.tabs = QTabWidget()
         self.tabs.setTabsClosable(True)
@@ -2841,6 +2925,12 @@ class MainWindow(QWidget):
         self._plus_btn.setToolTip(i18n.t("win.new_tab_tip"))
         self._gear_btn.setToolTip(i18n.t("win.settings_tip"))
         self._help_btn.setToolTip(i18n.t("win.help_tip"))
+
+    def toggle_broadcast(self):
+        """Toggle broadcasting keystrokes to every terminal pane in the window."""
+        self.broadcast = not self.broadcast
+        base = i18n.t("win.title")
+        self.setWindowTitle(base + i18n.t("win.broadcast_tag") if self.broadcast else base)
 
     def apply_settings(self):
         self._style_window()
