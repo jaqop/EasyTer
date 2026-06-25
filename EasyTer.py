@@ -18,6 +18,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -142,6 +143,7 @@ SETTINGS = {
     "paste_protection": True,  # confirm before pasting multi-line / large clipboard text
     "scrollback": 10000,       # lines of history kept per terminal
     "favorite_themes": [],     # themes hearted in the appearance gallery (shown first)
+    "prompt_theme": "",        # chosen oh-my-posh prompt theme (.omp.json); applied to new tabs
 }
 
 
@@ -735,7 +737,11 @@ class PtyBackend(QObject):
             exe = spec[0].lower()
             has_cmd = any(a.lower() in ("-command", "-c", "-file", "-encodedcommand") for a in spec)
             if ("powershell" in exe or "pwsh" in exe) and not has_cmd:
-                spec = spec + ["-NoExit", "-Command", PS_SHELL_INTEGRATION]
+                setup = ""
+                pt = SETTINGS.get("prompt_theme") or ""
+                if pt and os.path.exists(pt):   # chosen oh-my-posh prompt theme first
+                    setup = "oh-my-posh init pwsh --config '%s' | Invoke-Expression; " % pt.replace("'", "''")
+                spec = spec + ["-NoExit", "-Command", setup + PS_SHELL_INTEGRATION]
         # start the shell in: the requested dir (new tab/split inherits the
         # current tab's directory), else the configured start folder, else home —
         # never inheriting whatever launched EasyTer (often C:\Windows\system32)
@@ -1469,6 +1475,10 @@ class TerminalWidget(QWidget):
             if hasattr(win, "open_appearance_gallery"):
                 win.open_appearance_gallery()
             return
+        if ctrl and shift and key == Qt.Key_G:        # prompt-style gallery
+            if hasattr(win, "open_prompt_gallery"):
+                win.open_prompt_gallery()
+            return
         # all shortcuts: F1
         if key == Qt.Key_F1:
             if hasattr(win, "show_shortcuts"):
@@ -2194,8 +2204,11 @@ class SettingsDialog(QDialog):
         self.theme_combo.currentTextChanged.connect(self._on_theme_combo)
         gallery_btn = QPushButton(i18n.t("settings.gallery_btn"))
         gallery_btn.clicked.connect(lambda: self.win.open_appearance_gallery())
+        prompt_btn = QPushButton(i18n.t("settings.prompt_btn"))
+        prompt_btn.clicked.connect(lambda: self.win.open_prompt_gallery())
         theme_row.addWidget(self.theme_combo, 1)
         theme_row.addWidget(gallery_btn)
+        theme_row.addWidget(prompt_btn)
         tw = QWidget()
         tw.setLayout(theme_row)
         g.addWidget(tw, 6, 1)
@@ -2552,6 +2565,192 @@ class AppearanceGallery(QDialog):
         for c in self._cards:
             c.set_current(c.name == name)
         self.theme_chosen.emit(name)
+
+
+# ---- prompt (oh-my-posh) theme gallery: live previews, applied to new tabs ----
+_SGR_RE = re.compile(r"\x1b\[([0-9;]*)m")
+_PROMPT_PREVIEW_CACHE = {}
+
+
+def list_prompt_themes():
+    """Available oh-my-posh themes (*.omp.json in POSH_THEMES_PATH)."""
+    path = os.environ.get("POSH_THEMES_PATH", "")
+    if not path or not os.path.isdir(path):
+        return []
+    return sorted(glob.glob(os.path.join(path, "*.omp.json")))
+
+
+def render_prompt_preview(theme_path):
+    """Render a theme to an ANSI string via `oh-my-posh print primary` (cached)."""
+    if theme_path in _PROMPT_PREVIEW_CACHE:
+        return _PROMPT_PREVIEW_CACHE[theme_path]
+    out = ""
+    exe = shutil.which("oh-my-posh")
+    if exe:
+        try:
+            r = subprocess.run(
+                [exe, "print", "primary", "--config", theme_path, "--shell", "pwsh"],
+                capture_output=True, timeout=6,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            out = r.stdout.decode("utf-8", "replace")
+        except Exception:
+            out = ""
+    _PROMPT_PREVIEW_CACHE[theme_path] = out
+    return out
+
+
+def ansi_to_runs(s):
+    """Parse a string with SGR colors into [(text, fg_hex_or_None, bg_hex_or_None), ...]."""
+    runs = []
+    fg = bg = None
+    text = ""
+
+    def flush():
+        nonlocal text
+        if text:
+            runs.append((text, fg, bg))
+            text = ""
+
+    i, n = 0, len(s)
+    while i < n:
+        c = s[i]
+        if c == "\x1b" and i + 1 < n and s[i + 1] == "[":
+            j = s.find("m", i)
+            if j == -1:
+                break
+            flush()
+            codes = (s[i + 2:j] or "0").split(";")
+            k = 0
+            while k < len(codes):
+                code = codes[k] or "0"
+                if code == "0":
+                    fg = bg = None
+                elif code in ("38", "48") and k + 4 < len(codes) and codes[k + 1] == "2":
+                    hexv = "#%02x%02x%02x" % (int(codes[k + 2] or 0), int(codes[k + 3] or 0),
+                                              int(codes[k + 4] or 0))
+                    if code == "38":
+                        fg = hexv
+                    else:
+                        bg = hexv
+                    k += 4
+                elif code == "39":
+                    fg = None
+                elif code == "49":
+                    bg = None
+                k += 1
+            i = j + 1
+        elif c in "\r":
+            i += 1
+        else:
+            text += c
+            i += 1
+    flush()
+    return runs
+
+
+class PromptCard(QWidget):
+    """A clickable row that renders an oh-my-posh theme preview; click selects it."""
+    chosen = Signal(str)
+
+    def __init__(self, path, current=False):
+        super().__init__()
+        self.path = path
+        self.name = os.path.basename(path).replace(".omp.json", "")
+        self.current = current
+        self.lines = []   # list of [ (text, fg, bg), ... ] per visual line
+        for ln in render_prompt_preview(path).split("\n"):
+            self.lines.append(ansi_to_runs(ln))
+        fam = SETTINGS.get("font_family", "Cascadia Code NF")
+        self.font = QFont(fam, 11)
+        self.font.setStyleHint(QFont.Monospace)
+        fm = QFontMetrics(self.font)
+        self.ch = fm.height()
+        nlines = max(1, len([l for l in self.lines if l]))
+        self.setFixedHeight(self.ch * nlines + 34)
+        self.setCursor(Qt.PointingHandCursor)
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.LeftButton:
+            self.chosen.emit(self.path)
+
+    def paintEvent(self, _e):
+        p = QPainter(self)
+        try:
+            p.setRenderHint(QPainter.Antialiasing, True)
+            p.setBrush(QColor("#0b0f14"))
+            p.setPen(QPen(QColor("#4c9aff"), 2) if self.current
+                     else QPen(QColor(255, 255, 255, 30), 1))
+            p.drawRoundedRect(2, 2, self.width() - 4, self.height() - 4, 8, 8)
+            p.setFont(self.font)
+            fm = QFontMetrics(self.font)
+            y = 10
+            for runs in self.lines:
+                if not runs:
+                    continue
+                x = 14
+                for text, fg, bg in runs:
+                    w = fm.horizontalAdvance(text)
+                    if bg:
+                        p.fillRect(x, y, w, self.ch, QColor(bg))
+                    p.setPen(QColor(fg) if fg else QColor("#d0d0d0"))
+                    p.drawText(x, y + fm.ascent(), text)
+                    x += w
+                y += self.ch
+            # label
+            p.setPen(QColor("#8b949e"))
+            p.setFont(QFont("Segoe UI", 9))
+            tag = "  ●" if self.current else ""
+            p.drawText(14, self.height() - 22, self.width() - 28, 18,
+                       Qt.AlignLeft | Qt.AlignVCenter, self.name + tag)
+        finally:
+            p.end()
+
+
+class PromptGallery(QDialog):
+    """Visual picker for the oh-my-posh prompt theme; applied to new tabs."""
+    prompt_chosen = Signal(str)
+
+    def __init__(self, parent, current_path):
+        super().__init__(parent)
+        self.current_path = current_path
+        self.setWindowTitle(i18n.t("prompt.title"))
+        self.resize(900, 680)
+        self.setStyleSheet("QDialog{background:#0d1117;}")
+        root = QVBoxLayout(self)
+        root.setContentsMargins(12, 12, 12, 10)
+        title = QLabel(i18n.t("prompt.heading"))
+        title.setStyleSheet("color:#e6edf3;font-size:15px;font-weight:bold;")
+        sub = QLabel(i18n.t("prompt.sub"))
+        sub.setStyleSheet("color:#8b949e;")
+        root.addWidget(title)
+        root.addWidget(sub)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet("QScrollArea{border:0;}")
+        holder = QWidget()
+        holder.setStyleSheet("background:transparent;")
+        v = QVBoxLayout(holder)
+        v.setSpacing(10)
+        v.setContentsMargins(4, 8, 4, 4)
+        self._cards = []
+        themes = list_prompt_themes()
+        if not themes:
+            v.addWidget(QLabel(i18n.t("prompt.none")))
+        for path in themes:
+            card = PromptCard(path, current=(os.path.normcase(path) == os.path.normcase(current_path or "")))
+            card.chosen.connect(self._on_chosen)
+            v.addWidget(card)
+            self._cards.append(card)
+        v.addStretch(1)
+        scroll.setWidget(holder)
+        root.addWidget(scroll, 1)
+
+    def _on_chosen(self, path):
+        self.current_path = path
+        for c in self._cards:
+            c.current = (c.path == path)
+            c.update()
+        self.prompt_chosen.emit(path)
 
 
 class SearchBar(QWidget):
@@ -3154,6 +3353,7 @@ SHORTCUTS = [
         ("sck.plugins.init", "sc.plugins.init"),
         ("sck.app.quake", "sc.app.quake"),
         ("sck.app.gallery", "sc.app.gallery"),
+        ("sck.app.prompt", "sc.app.prompt"),
     ]),
 ]
 
@@ -3552,6 +3752,15 @@ class MainWindow(QWidget):
         SETTINGS["palette"] = {**DEFAULT_PALETTE, **v[2]} if v[2] else None
         apply_base_colors()
         self.apply_settings()
+        save_settings()
+
+    def open_prompt_gallery(self):
+        dlg = PromptGallery(self, SETTINGS.get("prompt_theme", ""))
+        dlg.prompt_chosen.connect(self._apply_prompt_theme)
+        dlg.exec()
+
+    def _apply_prompt_theme(self, path):
+        SETTINGS["prompt_theme"] = path   # new tabs init oh-my-posh with this theme
         save_settings()
 
     def retranslate(self):
