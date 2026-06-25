@@ -1464,6 +1464,10 @@ class TerminalWidget(QWidget):
             if hasattr(win, "command_palette"):
                 win.command_palette()
             return
+        if ctrl and shift and key == Qt.Key_M:        # appearance gallery
+            if hasattr(win, "open_appearance_gallery"):
+                win.open_appearance_gallery()
+            return
         # all shortcuts: F1
         if key == Qt.Key_F1:
             if hasattr(win, "show_shortcuts"):
@@ -2181,12 +2185,19 @@ class SettingsDialog(QDialog):
         g.addWidget(aw, 5, 1)
 
         g.addWidget(QLabel(i18n.t("settings.themes", n=len(THEMES))), 6, 0)
+        theme_row = QHBoxLayout()
         self.theme_combo = QComboBox()
         self.theme_combo.addItem(i18n.t("theme.choose"))
         self.theme_combo.addItems(list(THEMES.keys()))
         self.theme_combo.setMaxVisibleItems(20)
         self.theme_combo.currentTextChanged.connect(self._on_theme_combo)
-        g.addWidget(self.theme_combo, 6, 1)
+        gallery_btn = QPushButton(i18n.t("settings.gallery_btn"))
+        gallery_btn.clicked.connect(lambda: self.win.open_appearance_gallery())
+        theme_row.addWidget(self.theme_combo, 1)
+        theme_row.addWidget(gallery_btn)
+        tw = QWidget()
+        tw.setLayout(theme_row)
+        g.addWidget(tw, 6, 1)
 
         # background image (user-chosen; applied on save)
         g.addWidget(QLabel(i18n.t("settings.bg_image")), 7, 0)
@@ -2378,6 +2389,142 @@ class SettingsDialog(QDialog):
         apply_base_colors()
         self.win.apply_settings()
         self.accept()
+
+
+def current_theme_name():
+    """Best-effort name of the active theme (matches the saved bg/fg)."""
+    for n, v in THEMES.items():
+        if v[0] == SETTINGS.get("bg") and v[1] == SETTINGS.get("fg"):
+            return n
+    return ""
+
+
+class ThemeCard(QWidget):
+    """A clickable preview card for one theme: name, a sample prompt line with
+    connected Arabic, and a row of ANSI swatches. Clicking applies it live."""
+    chosen = Signal(str)
+    SWATCHES = ("red", "green", "yellow", "blue", "magenta", "cyan", "brightblue", "brightmagenta")
+
+    def __init__(self, name, current=False):
+        super().__init__()
+        self.name = name
+        bg, fg, ansi = THEMES[name]
+        self.bg, self.fg = bg, fg
+        self.ansi = {**DEFAULT_PALETTE, **ansi} if ansi else DEFAULT_PALETTE
+        self.current = current
+        self.setFixedSize(232, 138)
+        self.setCursor(Qt.PointingHandCursor)
+
+    def set_current(self, c):
+        self.current = c
+        self.update()
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.LeftButton:
+            self.chosen.emit(self.name)
+
+    def paintEvent(self, _e):
+        p = QPainter(self)
+        try:
+            p.setRenderHint(QPainter.Antialiasing, True)
+            fg = QColor(self.fg)
+            a = self.ansi
+            p.setBrush(QColor(self.bg))
+            p.setPen(QPen(QColor("#4c9aff"), 3) if self.current
+                     else QPen(QColor(255, 255, 255, 40), 1))
+            p.drawRoundedRect(2, 2, self.width() - 4, self.height() - 4, 10, 10)
+            p.setPen(fg)
+            p.setFont(QFont("Segoe UI", 10, QFont.Bold))
+            p.drawText(14, 9, self.width() - 28, 20, Qt.AlignLeft | Qt.AlignVCenter, self.name)
+            if self.current:
+                p.setPen(QColor("#4c9aff"))
+                p.setFont(QFont("Segoe UI", 8, QFont.Bold))
+                p.drawText(0, 11, self.width() - 14, 16,
+                           Qt.AlignRight | Qt.AlignVCenter, i18n.t("gallery.current"))
+            p.setFont(QFont("Consolas", 9))
+            x, y = 14, 52
+            for txt, col in (("admin", a.get("green")), ("@", a.get("brightblack")),
+                             ("easyter ", a.get("blue")), ("$ ", self.fg)):
+                p.setPen(QColor(col))
+                p.drawText(x, y, txt)
+                x += p.fontMetrics().horizontalAdvance(txt)
+            p.setPen(QColor(a.get("yellow")))
+            p.drawText(x, y, "echo")
+            p.setPen(fg)
+            p.drawText(14, 76, "مرحبا بالعالم — Hello 123")
+            n = len(self.SWATCHES)
+            sw = (self.width() - 28) / n
+            sy = self.height() - 30
+            p.setPen(Qt.NoPen)
+            for i, k in enumerate(self.SWATCHES):
+                p.setBrush(QColor(a.get(k, "#888888")))
+                p.drawRoundedRect(int(14 + i * sw), sy, int(sw - 4), 14, 3, 3)
+        finally:
+            p.end()
+
+
+class AppearanceGallery(QDialog):
+    """Visual theme browser: a search box + a grid of preview cards. Clicking a
+    card applies the theme immediately (live), and the picker stays open."""
+    theme_chosen = Signal(str)
+    MAX_CARDS = 150
+
+    def __init__(self, parent, current_name):
+        super().__init__(parent)
+        self.current_name = current_name
+        self.setWindowTitle(i18n.t("gallery.title"))
+        self.resize(820, 660)
+        self.setStyleSheet("QDialog{background:#0d1117;}")
+        root = QVBoxLayout(self)
+        root.setContentsMargins(12, 12, 12, 10)
+        top = QHBoxLayout()
+        title = QLabel(i18n.t("gallery.heading"))
+        title.setStyleSheet("color:#e6edf3;font-size:15px;font-weight:bold;")
+        self.count = QLabel("")
+        self.count.setStyleSheet("color:#8b949e;")
+        self.search = QLineEdit()
+        self.search.setPlaceholderText(i18n.t("gallery.search"))
+        self.search.setFixedWidth(300)
+        self.search.setStyleSheet("background:#161b22;color:#e6edf3;border:1px solid #30363d;"
+                                  "border-radius:6px;padding:6px 10px;")
+        top.addWidget(title)
+        top.addSpacing(10)
+        top.addWidget(self.count)
+        top.addStretch(1)
+        top.addWidget(self.search)
+        root.addLayout(top)
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setStyleSheet("QScrollArea{border:0;}")
+        root.addWidget(self.scroll, 1)
+        self.search.textChanged.connect(self._rebuild)
+        self._cards = []
+        self._rebuild("")
+        self.search.setFocus()
+
+    def _rebuild(self, _=None):
+        q = self.search.text().strip().lower()
+        names = [n for n in THEMES if not q or q in n.lower()]
+        shown = names[:self.MAX_CARDS]
+        self.count.setText(i18n.t("gallery.count", total=len(names), shown=len(shown)))
+        holder = QWidget()
+        holder.setStyleSheet("background:transparent;")
+        grid = QGridLayout(holder)
+        grid.setSpacing(14)
+        grid.setContentsMargins(4, 4, 4, 4)
+        self._cards = []
+        for i, name in enumerate(shown):
+            card = ThemeCard(name, current=(name == self.current_name))
+            card.chosen.connect(self._on_chosen)
+            grid.addWidget(card, i // 3, i % 3)
+            self._cards.append(card)
+        self.scroll.setWidget(holder)
+
+    def _on_chosen(self, name):
+        self.current_name = name
+        for c in self._cards:
+            c.set_current(c.name == name)
+        self.theme_chosen.emit(name)
 
 
 class SearchBar(QWidget):
@@ -2979,6 +3126,7 @@ SHORTCUTS = [
         ("sck.plugins.help", "sc.plugins.help"),
         ("sck.plugins.init", "sc.plugins.init"),
         ("sck.app.quake", "sc.app.quake"),
+        ("sck.app.gallery", "sc.app.gallery"),
     ]),
 ]
 
@@ -3363,6 +3511,21 @@ class MainWindow(QWidget):
 
     def open_settings(self):
         SettingsDialog(self).exec()
+
+    def open_appearance_gallery(self):
+        dlg = AppearanceGallery(self, current_theme_name())
+        dlg.theme_chosen.connect(self._apply_theme_by_name)
+        dlg.exec()
+
+    def _apply_theme_by_name(self, name):
+        v = THEMES.get(name)
+        if not v:
+            return
+        SETTINGS["bg"], SETTINGS["fg"] = v[0], v[1]
+        SETTINGS["palette"] = {**DEFAULT_PALETTE, **v[2]} if v[2] else None
+        apply_base_colors()
+        self.apply_settings()
+        save_settings()
 
     def retranslate(self):
         """Re-apply UI text after a live language change (title + tooltips).

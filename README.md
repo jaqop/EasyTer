@@ -102,6 +102,7 @@ The UI is English by default. To switch to Arabic: **Settings (`Ctrl+,`) → Lan
 | `Ctrl++` / `Ctrl+-` / `Ctrl+0` | Zoom in / out / reset font |
 | `Ctrl+,` · ⚙ | Settings |
 | `Ctrl+Shift+P` | Command palette (plugin commands) |
+| `Ctrl+Shift+M` | Appearance gallery (browse themes) |
 | `Ctrl+Alt+`​` | Summon / hide EasyTer (global, works anywhere) |
 | `F1` · `?` | All shortcuts |
 
