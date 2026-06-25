@@ -170,6 +170,7 @@ SETTINGS = {
     "start_dir": "",           # folder new shells open in ("" = home, never system32)
     "cursor_style": "block",   # cursor shape: "block" | "bar" | "underline"
     "shell_integration": True, # inject OSC 133 into PowerShell for command blocks
+    "ps_load_profile": False,  # load the user's PowerShell profile (slower start); EasyTer self-provides prompt + UTF-8
     "notify_on_finish": True,  # desktop notification when a long command finishes unfocused
     "quake_enabled": True,     # global hotkey (Ctrl+Alt+`) to summon/hide EasyTer from anywhere
     "paste_protection": True,  # confirm before pasting multi-line / large clipboard text
@@ -770,7 +771,15 @@ class PtyBackend(QObject):
             exe = spec[0].lower()
             has_cmd = any(a.lower() in ("-command", "-c", "-file", "-encodedcommand") for a in spec)
             if ("powershell" in exe or "pwsh" in exe) and not has_cmd:
-                setup = ""
+                # Skip the user's PowerShell profile by default: it's the biggest
+                # avoidable startup cost (it often re-runs oh-my-posh and spawns
+                # chcp, which EasyTer already handles). Set UTF-8 ourselves without
+                # spawning chcp.exe so Arabic still works. Users who rely on their
+                # profile can set ps_load_profile=true.
+                if not SETTINGS.get("ps_load_profile", False):
+                    spec = spec + ["-NoProfile"]
+                setup = ("$OutputEncoding=[Console]::InputEncoding="
+                         "[Console]::OutputEncoding=[Text.UTF8Encoding]::new(); ")
                 pt = SETTINGS.get("prompt_theme") or ""
                 if pt and os.path.exists(pt):   # chosen oh-my-posh prompt theme first
                     # detect edition at runtime (Desktop=5.1 'powershell',
