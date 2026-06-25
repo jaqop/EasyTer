@@ -57,6 +57,20 @@ KITTY_KB_RE = re.compile(r"\x1b\[[<>=?][0-9;]*u")
 INCOMPLETE_TAIL_RE = re.compile(r"\x1b\[?[0-9;?<>=]*$")
 # Clickable links: match http(s) URLs in the visible text (Ctrl+click to open)
 URL_RE = re.compile(r"""https?://[^\s<>"'`)\]}]+""")
+# Shell-integration markers (OSC 133, FinalTerm/iTerm2): A=prompt start,
+# B=command start, C=output start, D[;exit]=command end. Used for command blocks.
+OSC133_RE = re.compile(r"\x1b\]133;([A-D])([^\x07\x1b]*)(?:\x07|\x1b\\)")
+# PowerShell shell-integration: wrap the existing prompt (oh-my-posh-safe) to emit
+# OSC 133 markers so command blocks work. Runs once, after the profile loads.
+PS_SHELL_INTEGRATION = (
+    "if(-not $global:__ET_SI){$global:__ET_SI=$true;"
+    "$global:__ET_OP=$function:prompt;"
+    "function global:prompt{"
+    "$c=$global:LASTEXITCODE;if($null -eq $c){if($?){$c=0}else{$c=1}};"
+    "\"$([char]27)]133;D;$c$([char]7)$([char]27)]133;A$([char]7)\""
+    "+(& $global:__ET_OP)+"
+    "\"$([char]27)]133;B$([char]7)\"}}"
+)
 
 DEFAULT_SHELL = "powershell.exe"
 
@@ -112,6 +126,7 @@ SETTINGS = {
     "bg_image_opacity": 0.35,  # how strongly the background image shows through (0..1)
     "start_dir": "",           # folder new shells open in ("" = home, never system32)
     "cursor_style": "block",   # cursor shape: "block" | "bar" | "underline"
+    "shell_integration": True, # inject OSC 133 into PowerShell for command blocks
 }
 
 
@@ -682,6 +697,10 @@ class PtyBackend(QObject):
         self.alt_screen = False     # is a full-screen TUI program active now?
         self._scan_tail = ""        # tail to catch a sequence split across two reads
         self._carry = ""            # incomplete sequence carried to the next read
+        # command blocks: each entry = [prompt_abs_line, exit_code_or_None],
+        # populated from OSC 133 shell-integration markers (empty if the shell
+        # doesn't emit them — the feature is then simply inactive)
+        self.command_marks = []
         # remove a short fake API key (it breaks `claude` inside the terminal; the subscription is enough)
         env = dict(os.environ)
         key = env.get("ANTHROPIC_API_KEY", "")
@@ -689,6 +708,13 @@ class PtyBackend(QObject):
             env.pop("ANTHROPIC_API_KEY", None)
         # a list not a string: keeps paths with spaces (like Git Bash) intact
         spec = command if isinstance(command, list) else [command]
+        # auto-enable command blocks for PowerShell by appending an OSC 133 prompt
+        # wrapper that runs after the profile (coexists with oh-my-posh)
+        if SETTINGS.get("shell_integration", True):
+            exe = spec[0].lower()
+            has_cmd = any(a.lower() in ("-command", "-c", "-file", "-encodedcommand") for a in spec)
+            if ("powershell" in exe or "pwsh" in exe) and not has_cmd:
+                spec = spec + ["-NoExit", "-Command", PS_SHELL_INTEGRATION]
         # start the shell in a sensible directory (the home folder by default,
         # or a user-chosen one) instead of inheriting whatever launched EasyTer
         # (which is often C:\Windows\system32)
@@ -715,8 +741,7 @@ class PtyBackend(QObject):
                 else:
                     self._carry = ""
                 if data:
-                    with self.lock:
-                        self.stream.feed(data)
+                    self._feed_with_marks(data)
                     self.data_ready.emit()
         except EOFError:
             pass
@@ -727,6 +752,42 @@ class PtyBackend(QObject):
                 self.exited.emit()
             except Exception:
                 pass
+
+    def _feed_with_marks(self, data):
+        """Feed data to pyte, recording OSC 133 command-block marks as we go.
+
+        We split the stream at each marker so we can read the cursor position
+        exactly where the marker sits (= the prompt/command line). If the shell
+        emits no OSC 133, this is just a normal feed."""
+        if "\x1b]133;" not in data:
+            with self.lock:
+                self.stream.feed(data)
+            return
+        pos = 0
+        with self.lock:
+            for m in OSC133_RE.finditer(data):
+                seg = data[pos:m.start()]
+                if seg:
+                    self.stream.feed(seg)
+                kind = m.group(1)
+                params = (m.group(2) or "").lstrip(";")
+                abs_line = len(self.screen.history.top) + self.screen.cursor.y
+                if kind == "A":                     # a new prompt starts here
+                    self.command_marks.append([abs_line, None])
+                    if len(self.command_marks) > 2000:
+                        del self.command_marks[:1000]
+                elif kind == "D" and self.command_marks:   # the command just finished
+                    code = None
+                    if params:
+                        try:
+                            code = int(params.split(";")[0])
+                        except ValueError:
+                            code = None
+                    self.command_marks[-1][1] = code
+                pos = m.end()
+            tail = data[pos:]
+            if tail:
+                self.stream.feed(tail)
 
     def _scan_alt(self, data):
         """Detects entering/leaving the alternate screen (?1049h/?1049l) to enable Claude mode automatically."""
@@ -1026,6 +1087,19 @@ class TerminalWidget(QWidget):
                     p.setBrush(Qt.NoBrush)
                     p.drawRect(crect.adjusted(0, 0, -1, -1))
 
+            # command-block markers: a thin bar in the left gutter at each prompt
+            # line (green = success, red = failure, grey = unknown/running)
+            if self.backend.command_marks:
+                ec_by_line = {pl: ec for pl, ec in self.backend.command_marks}
+                for yi in range(len(visible)):
+                    ec = ec_by_line.get(start + yi, "none")
+                    if ec == "none":
+                        continue
+                    bar = (QColor("#2ea043") if ec == 0
+                           else QColor("#cf222e") if ec is not None
+                           else QColor("#6e7681"))
+                    p.fillRect(QRect(0, yi * self.ch, 3, self.ch), bar)
+
             # selection highlight (over the text, translucent)
             sel = self._norm_sel()
             if sel:
@@ -1302,6 +1376,12 @@ class TerminalWidget(QWidget):
         if ctrl and shift and key == Qt.Key_B:        # broadcast typing to all panes
             if hasattr(win, "toggle_broadcast"):
                 win.toggle_broadcast()
+            return
+        if ctrl and shift and key == Qt.Key_Up:       # jump to previous command (OSC 133)
+            self._jump_command(-1)
+            return
+        if ctrl and shift and key == Qt.Key_Down:     # jump to next command
+            self._jump_command(+1)
             return
 
         # zoom in/out/reset font (for the focused pane)
@@ -1581,6 +1661,31 @@ class TerminalWidget(QWidget):
             maxoff = len(self.backend.screen.history.top)
         off = total - self.rows // 2 - L
         self.scroll_offset = max(0, min(maxoff, off))
+
+    def _jump_command(self, direction):
+        """Scroll to the previous (-1) or next (+1) command prompt (OSC 133 marks)."""
+        marks = self.backend.command_marks
+        if not marks:
+            return
+        with self.backend.lock:
+            total = len(self.backend.screen.history.top) + self.backend.screen.lines
+            maxoff = len(self.backend.screen.history.top)
+        cur_top = max(0, total - self.rows - self.scroll_offset)
+        plines = sorted({pl for pl, _ in marks if 0 <= pl < total})
+        target = None
+        if direction < 0:
+            for pl in plines:
+                if pl < cur_top:
+                    target = pl            # last prompt strictly above the view
+        else:
+            for pl in plines:
+                if pl > cur_top:
+                    target = pl            # first prompt below the view
+                    break
+        if target is None:
+            return
+        self.scroll_offset = max(0, min(maxoff, total - self.rows - max(0, target - 1)))
+        self.update()
 
     def _update_search_count(self):
         if self.search_bar:
@@ -2576,6 +2681,7 @@ SHORTCUTS = [
         ("sck.clip.search", "sc.clip.search"),
         ("sck.clip.wheel", "sc.clip.wheel"),
         ("sck.clip.link", "sc.clip.link"),
+        ("sck.clip.cmdjump", "sc.clip.cmdjump"),
     ]),
     ("sc.cat.arabic", [
         ("sck.arabic.f2", "sc.arabic.f2"),
