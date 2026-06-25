@@ -78,6 +78,9 @@ PS_SHELL_INTEGRATION = (
     "if(-not $global:__ET_SI){$global:__ET_SI=$true;"
     "$global:__ET_OP=$function:prompt;"
     "function global:prompt{"
+    # remember the row this prompt starts on, so a live theme switch can wipe
+    # exactly the prompt + its echoed call without disturbing scrollback above
+    "try{$global:__ET_PROW=[Console]::CursorTop}catch{};"
     "$c=$global:LASTEXITCODE;if($null -eq $c){if($?){$c=0}else{$c=1}};"
     "\"$([char]27)]133;D;$c$([char]7)$([char]27)]133;A$([char]7)"
     "$([char]27)]9;9;$($PWD.ProviderPath)$([char]7)\""
@@ -86,6 +89,12 @@ PS_SHELL_INTEGRATION = (
     "}}};"
     # __et_set_prompt: switch the oh-my-posh theme live, then re-wrap.
     "function global:__et_set_prompt($cfg){"
+    # jump back to the prompt's start row and clear to end of screen: erases the
+    # prompt line(s) + the echoed __et_set_prompt call (regardless of wrapping)
+    # so applying a theme leaves no command trail and touches no prior output
+    "try{if($null -ne $global:__ET_PROW){"
+    "[Console]::SetCursorPosition(0,$global:__ET_PROW);"
+    "[Console]::Write([char]27+'[J')}}catch{};"
     "$global:__ET_SI=$false;$ErrorActionPreference='SilentlyContinue';"
     # Detect the real host edition at runtime: Desktop=Windows PowerShell 5.1
     # (init 'powershell'), Core=PowerShell 7 (init 'pwsh'). Never trust a guess
