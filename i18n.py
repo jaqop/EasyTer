@@ -150,6 +150,7 @@ STRINGS = {
         "sc.plugins.palette": "Command palette (your plugin commands)",
         "sc.plugins.help": "This menu",
         "sc.plugins.init": "Add your shortcuts and commands in Python",
+        "sc.app.quake": "Summon / hide EasyTer (works anywhere)",
         # shortcut key combos (kept as data so the table stays one source)
         "sck.tabs.new": "Ctrl+T   ·   + button",
         "sck.tabs.cycle": "Ctrl+Tab / Ctrl+Shift+Tab",
@@ -179,6 +180,7 @@ STRINGS = {
         "sck.plugins.palette": "Ctrl+Shift+P",
         "sck.plugins.help": "F1   ·   ? button",
         "sck.plugins.init": "~/.easyter/init.py",
+        "sck.app.quake": "Ctrl+Alt+`",
     },
     "ar": {
         "menu.copy": "نسخ\tCtrl+Shift+C",
@@ -288,6 +290,7 @@ STRINGS = {
         "sc.plugins.palette": "لوحة الأوامر (أوامر إضافاتك)",
         "sc.plugins.help": "هذه القائمة",
         "sc.plugins.init": "أضِف اختصاراتك وأوامرك بـPython",
+        "sc.app.quake": "استحضار / إخفاء EasyTer (من أيّ مكان)",
         "sck.tabs.new": "Ctrl+T   ·   زرّ +",
         "sck.tabs.cycle": "Ctrl+Tab / Ctrl+Shift+Tab",
         "sck.tabs.rename": "نقر مزدوج على التبويب",
@@ -316,5 +319,6 @@ STRINGS = {
         "sck.plugins.palette": "Ctrl+Shift+P",
         "sck.plugins.help": "F1   ·   زرّ ؟",
         "sck.plugins.init": "~/.easyter/init.py",
+        "sck.app.quake": "Ctrl+Alt+`",
     },
 }

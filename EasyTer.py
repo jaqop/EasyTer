@@ -11,6 +11,8 @@ A full terminal emulator built on:
 Run with:  pythonw EasyTer.py   (or EasyTer.vbs / run.bat)
 """
 
+import ctypes
+import ctypes.wintypes
 import glob
 import json
 import os
@@ -129,6 +131,7 @@ SETTINGS = {
     "cursor_style": "block",   # cursor shape: "block" | "bar" | "underline"
     "shell_integration": True, # inject OSC 133 into PowerShell for command blocks
     "notify_on_finish": True,  # desktop notification when a long command finishes unfocused
+    "quake_enabled": True,     # global hotkey (Ctrl+Alt+`) to summon/hide EasyTer from anywhere
 }
 
 
@@ -2759,6 +2762,7 @@ SHORTCUTS = [
         ("sck.plugins.palette", "sc.plugins.palette"),
         ("sck.plugins.help", "sc.plugins.help"),
         ("sck.plugins.init", "sc.plugins.init"),
+        ("sck.app.quake", "sc.app.quake"),
     ]),
 ]
 
@@ -3124,6 +3128,49 @@ class MainWindow(QWidget):
             self._tray.showMessage(title, body, QSystemTrayIcon.Information, 5000)
         except Exception:
             pass
+
+    # ---------- Quake-style global summon hotkey (Windows: Ctrl+Alt+`) ----------
+    def _register_quake(self):
+        if sys.platform != "win32" or not SETTINGS.get("quake_enabled", True):
+            return
+        if getattr(self, "_quake_registered", False):
+            return
+        try:
+            MOD_CONTROL, MOD_ALT, MOD_NOREPEAT = 0x0002, 0x0001, 0x4000
+            VK_OEM_3 = 0xC0   # the ` / ~ key
+            self._quake_id = 0xE751
+            ok = ctypes.windll.user32.RegisterHotKey(
+                int(self.winId()), self._quake_id,
+                MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_OEM_3)
+            self._quake_registered = bool(ok)
+        except Exception:
+            self._quake_registered = False
+
+    def nativeEvent(self, eventType, message):
+        try:
+            if bytes(eventType) == b"windows_generic_MSG":
+                msg = ctypes.wintypes.MSG.from_address(int(message))
+                if msg.message == 0x0312 and msg.wParam == getattr(self, "_quake_id", -1):
+                    self._toggle_quake()
+                    return True, 0
+        except Exception:
+            pass
+        return super().nativeEvent(eventType, message)
+
+    def _toggle_quake(self):
+        if self.isVisible() and self.isActiveWindow() and not self.isMinimized():
+            self.hide()
+        else:
+            self.showNormal()
+            self.raise_()
+            self.activateWindow()
+            ap = self.findChild(TerminalWidget)
+            if ap is not None:
+                ap.setFocus()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._register_quake()
 
     def apply_settings(self):
         self._style_window()
