@@ -24,6 +24,39 @@ import threading
 import time
 import webbrowser
 
+
+# --- Optional startup/paint profiling (set EASYTER_PROFILE=1) --------------
+# The two "slow" suspects are import-time (loading Qt) and interaction (the
+# paint loop). Guessing is cheap; numbers are better. When EASYTER_PROFILE is
+# set, write a timeline — ms since process start, and the delta since the
+# previous mark — to _easyter_profile.log next to the script. Zero cost when
+# unset, and safe under pythonw (no console) since it only ever writes a file.
+_PROC_T0 = time.perf_counter()
+_PROF_ON = bool(os.environ.get("EASYTER_PROFILE"))
+_prof_last = _PROC_T0
+_prof_first_paint = False
+_prof_first_output = False
+
+def _prof(label):
+    """Append one timeline mark to the profile log (no-op unless enabled)."""
+    global _prof_last
+    if not _PROF_ON:
+        return
+    try:
+        now = time.perf_counter()
+        line = "%9.1f ms  (+%8.1f)  %s\n" % (
+            (now - _PROC_T0) * 1000.0, (now - _prof_last) * 1000.0, label)
+        _prof_last = now
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "_easyter_profile.log")
+        with open(path, "a", encoding="utf-8") as _f:
+            _f.write(line)
+    except Exception:
+        pass
+
+_prof("process start")
+# --------------------------------------------------------------------------
+
 # Under pythonw.exe there is no console, so sys.stdout/sys.stderr are None. A stray
 # print() (e.g. from a caught startup error, a hook, or a plugin) would then raise and
 # crash the app silently. Redirect the missing streams to the null device up front so
@@ -210,6 +243,7 @@ def available_shells():
         shells.append(("WSL (Linux)", "wsl.exe"))
     return shells
 
+_prof("before PySide6 import")
 from PySide6.QtCore import Qt, QObject, Signal, QRect, QPointF, QTimer
 from PySide6.QtGui import (
     QFont, QFontMetrics, QFontMetricsF, QPainter, QColor, QKeyEvent, QPen,
@@ -222,6 +256,7 @@ from PySide6.QtWidgets import (
     QTabWidget, QLineEdit, QPlainTextEdit, QFileDialog, QSlider, QInputDialog,
     QTextEdit, QComboBox, QScrollArea, QFrame, QSystemTrayIcon,
 )
+_prof("PySide6 imported")
 
 import i18n
 
@@ -1125,6 +1160,10 @@ class TerminalWidget(QWidget):
         # shape/draw can cost tens of ms; we widen the throttle to match so we
         # never queue repaints faster than the machine can finish them.
         self._last_paint_ms = 0.0
+        # profiling aggregates (only used when EASYTER_PROFILE is set)
+        self._paint_n = 0
+        self._paint_sum_ms = 0.0
+        self._paint_max_ms = 0.0
 
         # cursor blink
         self._blink = True
@@ -1237,6 +1276,11 @@ class TerminalWidget(QWidget):
 
     # ---------- backend signals ----------
     def _on_data(self):
+        if _PROF_ON and not self._first_output:
+            global _prof_first_output
+            if not _prof_first_output:
+                _prof_first_output = True
+                _prof("first shell output")
         self._first_output = True
         if not self.copy_mode:
             self.scroll_offset = 0  # jump to the bottom when new output arrives
@@ -1340,6 +1384,22 @@ class TerminalWidget(QWidget):
             p.end()
         # remember the cost so the output throttle can adapt to this machine
         self._last_paint_ms = (time.perf_counter() - _t0) * 1000.0
+        if _PROF_ON:
+            global _prof_first_paint
+            if not _prof_first_paint:
+                _prof_first_paint = True
+                _prof("first paint (%.1f ms)" % self._last_paint_ms)
+            # log a rolling avg/max every 120 paints so we see steady-state cost
+            self._paint_n += 1
+            self._paint_sum_ms += self._last_paint_ms
+            if self._last_paint_ms > self._paint_max_ms:
+                self._paint_max_ms = self._last_paint_ms
+            if self._paint_n >= 120:
+                _prof("120 paints: avg %.1f ms, max %.1f ms"
+                      % (self._paint_sum_ms / self._paint_n, self._paint_max_ms))
+                self._paint_n = 0
+                self._paint_sum_ms = 0.0
+                self._paint_max_ms = 0.0
 
     def _paint(self, p):
         p.fillRect(self.rect(), BASE_BG)
@@ -4108,11 +4168,13 @@ class MainWindow(QWidget):
 def main():
     app = QApplication(sys.argv)
     app.setApplicationName("EasyTer")
+    _prof("QApplication created")
     load_settings()
     i18n.set_language(SETTINGS.get("language", "en"))   # UI language (en default)
     load_themes()                       # extra themes from ~/.easyter/themes/
     apply_base_colors()
     load_plugins()                      # registers plugin keybindings/commands/themes/hooks
+    _prof("settings/themes/plugins loaded")
     # optional folder argument ("Open EasyTer here" / `EasyTer.py <dir>`)
     start_dir = None
     for arg in sys.argv[1:]:
@@ -4120,8 +4182,11 @@ def main():
             start_dir = os.path.abspath(arg)
             break
     win = MainWindow(start_dir=start_dir)
+    _prof("main window built")
     win.show()
+    _prof("window shown")
     PLUGINS.emit("startup", win)
+    _prof("entering event loop")
     sys.exit(app.exec())
 
 
