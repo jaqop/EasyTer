@@ -1164,16 +1164,24 @@ class TerminalWidget(QWidget):
     def _redraw_prompt_after_resize(self):
         """Nudge PowerShell to redraw the prompt at the new width so oh-my-posh's
         right-aligned segment repositions without the user pressing Enter. Only
-        when idle at an interactive PowerShell prompt (never mid-command/TUI)."""
-        b = self.backend
-        if b.alt_screen or not b.at_prompt:
-            return
+        when idle at an interactive PowerShell prompt (never mid-command/TUI).
+
+        The F5 is sent on a short delay (and again a bit later): the ConPTY resize
+        and the stdin keypress travel on different channels, so firing immediately
+        sometimes redraws at the old width before ResizePseudoConsole propagates.
+        Re-checking state at fire time keeps it from firing mid-command."""
         cs = " ".join(self.command) if isinstance(self.command, list) else str(self.command)
-        if "powershell" in cs.lower() or "pwsh" in cs.lower():
-            try:
-                b.write(PS_REDRAW_KEY)
-            except Exception:
-                pass
+        if "powershell" not in cs.lower() and "pwsh" not in cs.lower():
+            return
+        def nudge():
+            b = self.backend
+            if b._alive and not b.alt_screen and b.at_prompt:
+                try:
+                    b.write(PS_REDRAW_KEY)
+                except Exception:
+                    pass
+        QTimer.singleShot(120, nudge)
+        QTimer.singleShot(300, nudge)
 
     # ---------- painting ----------
     def paintEvent(self, event):
