@@ -67,6 +67,8 @@ OSC133_RE = re.compile(r"\x1b\]133;([A-D])([^\x07\x1b]*)(?:\x07|\x1b\\)")
 # Used so a new tab/split opens in the current tab's directory.
 OSC99_RE = re.compile(r'\x1b\]9;9;"?([^"\x07\x1b]+)"?(?:\x07|\x1b\\)')
 OSC7_RE = re.compile(r"\x1b\]7;file://[^/]*(/[^\x07\x1b]*)(?:\x07|\x1b\\)")
+# OSC 52: a program sets the system clipboard (e.g. yank in vim over SSH). Write-only.
+OSC52_RE = re.compile(r"\x1b\]52;[cpqs0-7]*;([A-Za-z0-9+/=]+)(?:\x07|\x1b\\)")
 # PowerShell shell-integration: wrap the existing prompt (oh-my-posh-safe) to emit
 # OSC 133 markers so command blocks work. Runs once, after the profile loads.
 PS_SHELL_INTEGRATION = (
@@ -700,6 +702,7 @@ class PtyBackend(QObject):
     exited = Signal()
     alt_screen_changed = Signal(bool)  # entering/leaving the alternate screen (a TUI like Claude)
     command_ended = Signal(object)     # a command finished (OSC 133 D); arg = exit code or None
+    clipboard_set = Signal(str)        # a program set the clipboard via OSC 52
 
     def __init__(self, cols, rows, command="powershell.exe", start_cwd=None):
         super().__init__()
@@ -748,6 +751,7 @@ class PtyBackend(QObject):
                     continue
                 self._scan_alt(data)                 # detect the alternate screen (on the raw data)
                 self._scan_cwd(data)                 # track the working directory
+                self._scan_osc52(data)               # programs setting the clipboard
                 data = self._carry + data
                 data = KITTY_KB_RE.sub("", data)      # strip the stray 'u'
                 # carry any incomplete sequence at the end of the chunk to the next read (avoid splitting)
@@ -846,6 +850,19 @@ class PtyBackend(QObject):
                     self.cwd = cwd
             except Exception:
                 pass
+
+    def _scan_osc52(self, data):
+        """A program set the clipboard via OSC 52 (write-only; queries ignored)."""
+        if "\x1b]52;" not in data:
+            return
+        import base64
+        for m in OSC52_RE.finditer(data):
+            try:
+                txt = base64.b64decode(m.group(1)).decode("utf-8", "replace")
+            except Exception:
+                continue
+            if txt:
+                self.clipboard_set.emit(txt)
 
     @staticmethod
     def _osc7_to_path(p):
@@ -956,6 +973,8 @@ class TerminalWidget(QWidget):
         self.backend.exited.connect(self._on_exit)
         self.backend.alt_screen_changed.connect(self._on_alt_screen)
         self.backend.command_ended.connect(self._on_command_ended)
+        self.backend.clipboard_set.connect(
+            lambda txt: QApplication.clipboard().setText(txt))
         self._cmd_started = None      # time the user submitted a command (for finish notify)
         self._exited = False
 
@@ -1411,8 +1430,11 @@ class TerminalWidget(QWidget):
             return
 
         # ----- tabs -----
-        if ctrl and key == Qt.Key_T:                  # new tab
-            if hasattr(win, "new_tab"):
+        if ctrl and key == Qt.Key_T:                  # new tab / reopen closed (with Shift)
+            if shift:
+                if hasattr(win, "reopen_tab"):
+                    win.reopen_tab()
+            elif hasattr(win, "new_tab"):
                 win.new_tab()
             return
         if ctrl and key == Qt.Key_Tab:                # next tab
@@ -2618,8 +2640,12 @@ class EditorWidget(QWidget):
             if sess:
                 sess.focus_dir(self, k)
             return True
-        if ctrl and k == Qt.Key_T and hasattr(win, "new_tab"):
-            win.new_tab()
+        if ctrl and k == Qt.Key_T:
+            if shift:
+                if hasattr(win, "reopen_tab"):
+                    win.reopen_tab()
+            elif hasattr(win, "new_tab"):
+                win.new_tab()
             return True
         return False
 
@@ -2794,6 +2820,7 @@ SHORTCUTS = [
         ("sck.tabs.cycle", "sc.tabs.cycle"),
         ("sck.tabs.rename", "sc.tabs.rename"),
         ("sck.tabs.close", "sc.tabs.close"),
+        ("sck.tabs.reopen", "sc.tabs.reopen"),
     ]),
     ("sc.cat.split", [
         ("sck.split.h", "sc.split.h"),
@@ -2880,6 +2907,7 @@ class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
         self.broadcast = False           # when True, typing goes to every terminal pane
+        self._closed_tabs = []           # stack of recently closed tabs for reopen
         self.setWindowTitle(i18n.t("win.title"))
         self.tabs = QTabWidget()
         self.tabs.setTabsClosable(True)
@@ -3054,12 +3082,27 @@ class MainWindow(QWidget):
     def close_tab(self, index):
         s = self.tabs.widget(index)
         if isinstance(s, SessionWidget):
+            try:                                  # remember it for reopen (Ctrl+Shift+T)
+                root = s.root_widget()
+                tree = serialize_node(root) if root is not None else None
+                if tree is not None:
+                    self._closed_tabs.append((tree, self.tabs.tabText(index)))
+                    del self._closed_tabs[:-10]
+            except Exception:
+                pass
             s.close_all()
         self.tabs.removeTab(index)
         if s is not None:
             s.deleteLater()
         if self.tabs.count() == 0:
             self.close()
+
+    def reopen_tab(self):
+        """Reopen the most recently closed tab (Ctrl+Shift+T)."""
+        if not self._closed_tabs:
+            return
+        tree, name = self._closed_tabs.pop()
+        self.new_tab(tree=tree, name=name)
 
     def close_tab_for(self, session):
         idx = self.tabs.indexOf(session)
