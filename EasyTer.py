@@ -18,6 +18,7 @@ import re
 import shutil
 import sys
 import threading
+import time
 import webbrowser
 
 # Under pythonw.exe there is no console, so sys.stdout/sys.stderr are None. A stray
@@ -94,13 +95,13 @@ from PySide6.QtCore import Qt, QObject, Signal, QRect, QPointF, QTimer
 from PySide6.QtGui import (
     QFont, QFontMetrics, QPainter, QColor, QKeyEvent, QPen,
     QTextLayout, QTextCharFormat, QTextOption, QFontDatabase, QSyntaxHighlighter,
-    QPixmap,
+    QPixmap, QIcon,
 )
 from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QMenu,
     QSplitter, QDialog, QSpinBox, QPushButton, QLabel, QColorDialog, QFontComboBox,
     QTabWidget, QLineEdit, QPlainTextEdit, QFileDialog, QSlider, QInputDialog,
-    QTextEdit, QComboBox, QScrollArea, QFrame,
+    QTextEdit, QComboBox, QScrollArea, QFrame, QSystemTrayIcon,
 )
 
 import i18n
@@ -127,6 +128,7 @@ SETTINGS = {
     "start_dir": "",           # folder new shells open in ("" = home, never system32)
     "cursor_style": "block",   # cursor shape: "block" | "bar" | "underline"
     "shell_integration": True, # inject OSC 133 into PowerShell for command blocks
+    "notify_on_finish": True,  # desktop notification when a long command finishes unfocused
 }
 
 
@@ -687,6 +689,7 @@ class PtyBackend(QObject):
     data_ready = Signal()
     exited = Signal()
     alt_screen_changed = Signal(bool)  # entering/leaving the alternate screen (a TUI like Claude)
+    command_ended = Signal(object)     # a command finished (OSC 133 D); arg = exit code or None
 
     def __init__(self, cols, rows, command="powershell.exe"):
         super().__init__()
@@ -764,6 +767,7 @@ class PtyBackend(QObject):
                 self.stream.feed(data)
             return
         pos = 0
+        ended = []
         with self.lock:
             for m in OSC133_RE.finditer(data):
                 seg = data[pos:m.start()]
@@ -776,18 +780,22 @@ class PtyBackend(QObject):
                     self.command_marks.append([abs_line, None])
                     if len(self.command_marks) > 2000:
                         del self.command_marks[:1000]
-                elif kind == "D" and self.command_marks:   # the command just finished
+                elif kind == "D":                           # the command just finished
                     code = None
                     if params:
                         try:
                             code = int(params.split(";")[0])
                         except ValueError:
                             code = None
-                    self.command_marks[-1][1] = code
+                    if self.command_marks:
+                        self.command_marks[-1][1] = code
+                    ended.append(code)
                 pos = m.end()
             tail = data[pos:]
             if tail:
                 self.stream.feed(tail)
+        for code in ended:                 # notify outside the lock
+            self.command_ended.emit(code)
 
     def _scan_alt(self, data):
         """Detects entering/leaving the alternate screen (?1049h/?1049l) to enable Claude mode automatically."""
@@ -897,6 +905,8 @@ class TerminalWidget(QWidget):
         self.backend.data_ready.connect(self._on_data)
         self.backend.exited.connect(self._on_exit)
         self.backend.alt_screen_changed.connect(self._on_alt_screen)
+        self.backend.command_ended.connect(self._on_command_ended)
+        self._cmd_started = None      # time the user submitted a command (for finish notify)
         self._exited = False
 
     def restart_with(self, command):
@@ -983,6 +993,22 @@ class TerminalWidget(QWidget):
     def _on_exit(self):
         self._exited = True
         self.update()
+
+    def _on_command_ended(self, code):
+        """Notify on the desktop when a long command finishes while EasyTer is
+        not the active window (needs OSC 133 shell integration)."""
+        started, self._cmd_started = self._cmd_started, None
+        if started is None or not SETTINGS.get("notify_on_finish", True):
+            return
+        dur = time.time() - started
+        win = self.window()
+        if dur < 6 or (win is not None and win.isActiveWindow()):
+            return
+        if win is not None and hasattr(win, "notify"):
+            ok = (code == 0 or code is None)
+            status = i18n.t("notify.ok") if ok else i18n.t("notify.fail", code=code)
+            win.notify(i18n.t("notify.title"),
+                       i18n.t("notify.body", sec=int(dur), status=status))
 
     # ---------- sizing ----------
     def resizeEvent(self, event):
@@ -1428,6 +1454,8 @@ class TerminalWidget(QWidget):
         seq = None
         if key in (Qt.Key_Return, Qt.Key_Enter):
             seq = "\r"
+            if not self.backend.alt_screen:
+                self._cmd_started = time.time()   # for long-command finish notifications
         elif key == Qt.Key_Backspace:
             seq = "\x7f"
         elif key == Qt.Key_Tab:
@@ -3083,6 +3111,19 @@ class MainWindow(QWidget):
         self.broadcast = not self.broadcast
         base = i18n.t("win.title")
         self.setWindowTitle(base + i18n.t("win.broadcast_tag") if self.broadcast else base)
+
+    def notify(self, title, body):
+        """Show a desktop notification via a (lazily created) tray icon."""
+        try:
+            if getattr(self, "_tray", None) is None:
+                icon_path = os.path.join(SCRIPT_DIR, "icon.ico")
+                ic = QIcon(icon_path) if os.path.exists(icon_path) else self.windowIcon()
+                self._tray = QSystemTrayIcon(ic, self)
+                self._tray.setToolTip("EasyTer")
+                self._tray.show()
+            self._tray.showMessage(title, body, QSystemTrayIcon.Information, 5000)
+        except Exception:
+            pass
 
     def apply_settings(self):
         self._style_window()
