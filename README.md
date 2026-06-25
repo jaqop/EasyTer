@@ -65,6 +65,9 @@ WSL, Claude Code, vim, …).
 
 EasyTer checks these on startup: if Python is too old or a package is missing, it
 shows a message box telling you exactly what to install instead of failing silently.
+It also warns if it detects **Python 3.14+ or `pywinpty` 3.x** — that combination
+freezes TUIs and makes the terminal feel slow — and tells you how to drop back to
+the tested 3.13 / `pywinpty` 2.x stack.
 
 ## Install
 
