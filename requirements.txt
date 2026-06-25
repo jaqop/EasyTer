@@ -1,4 +1,5 @@
+# EasyTer dependencies (Windows). Recommended interpreter: Python 3.13.
 PySide6>=6.5
-pywinpty
+pywinpty<3   # the 2.x line is stable; pywinpty 3.x (a rewrite) freezes TUIs like Claude Code
 pyte
 wcwidth

@@ -33,6 +33,40 @@ if sys.stdout is None:
 if sys.stderr is None:
     sys.stderr = open(os.devnull, "w")
 
+
+# --- Requirements check ---------------------------------------------------
+# Fail with a clear, visible message instead of a silent crash: under pythonw
+# there is no console, so a bare ImportError / version error shows nothing and
+# the app just never appears. A native message box needs no third-party deps.
+def _fatal(msg):
+    """Show a native Windows message box (no deps) and exit."""
+    try:
+        ctypes.windll.user32.MessageBoxW(0, msg, "EasyTer", 0x10)  # MB_ICONERROR
+    except Exception:
+        pass
+    sys.exit(1)
+
+
+if sys.version_info < (3, 8):
+    _fatal("EasyTer needs Python 3.8 or newer (3.13 is recommended).\n"
+           "You are running Python %d.%d.%d.\n\n"
+           "Install Python 3.13 from https://python.org "
+           "(tick \"Add python.exe to PATH\")." % sys.version_info[:3])
+
+_missing = []
+for _mod, _pkg in (("PySide6", "PySide6"), ("pyte", "pyte"),
+                   ("winpty", "pywinpty"), ("wcwidth", "wcwidth")):
+    try:
+        __import__(_mod)
+    except ImportError:
+        _missing.append(_pkg)
+if _missing:
+    _fatal("EasyTer is missing required Python packages:\n\n    "
+           + ", ".join(_missing)
+           + "\n\nInstall them by double-clicking install.bat, or run this\n"
+             "in the project folder:\n\n    pip install -r requirements.txt")
+# --------------------------------------------------------------------------
+
 import pyte
 from winpty import PtyProcess
 from wcwidth import wcwidth as _wcwidth_raw

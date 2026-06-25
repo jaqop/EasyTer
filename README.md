@@ -52,8 +52,19 @@ WSL, Claude Code, vim, …).
 
 ## Requirements
 
-- Windows
-- Python 3.x
+- **Windows 10 or 11** (EasyTer uses ConPTY, which is Windows-only).
+- **Python 3.13 (recommended).** Install it from [python.org](https://www.python.org/downloads/)
+  and tick **"Add python.exe to PATH"** during setup (this also installs the `py`
+  launcher that `run.bat` / `EasyTer.vbs` rely on).
+  - Why 3.13: the stable `pywinpty` 2.x line has no wheel for Python 3.14, so 3.14
+    pulls `pywinpty` 3.x (a rewrite) which **freezes** full-screen TUIs like Claude
+    Code and vim. The launchers pin `pyw -3.13`, and `requirements.txt` pins
+    `pywinpty<3`, to keep you on the tested stack.
+- **Python packages:** `PySide6` (≥ 6.5), `pywinpty` (2.x), `pyte`, `wcwidth`.
+  These are installed for you by `install.bat` (or `pip install -r requirements.txt`).
+
+EasyTer checks these on startup: if Python is too old or a package is missing, it
+shows a message box telling you exactly what to install instead of failing silently.
 
 ## Install
 
@@ -96,7 +107,8 @@ The UI is English by default. To switch to Arabic: **Settings (`Ctrl+,`) → Lan
 | `Ctrl+Shift+↑` / `Ctrl+Shift+↓` | Jump to previous / next command |
 | `Ctrl+Shift+Space` | Copy mode (keyboard-select the scrollback) |
 | `Ctrl` + click | Open a link |
-| `Ctrl+Shift+C` / `Ctrl+Shift+V` | Copy / paste |
+| `Ctrl+C` / `Ctrl+V` | Copy selection (else interrupt) / paste |
+| `Ctrl+Shift+C` / `Ctrl+Shift+V` | Copy / paste (always) |
 | `Ctrl+F` | Search |
 | `F2` | Claude mode (BiDi) — manual/auto |
 | `Ctrl++` / `Ctrl+-` / `Ctrl+0` | Zoom in / out / reset font |

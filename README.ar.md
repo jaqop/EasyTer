@@ -49,8 +49,19 @@ vim…).
 
 ## المتطلّبات
 
-- ويندوز
-- Python 3.x
+- **ويندوز ١٠ أو ١١** (تعتمد EasyTer على ConPTY الخاصّ بويندوز فقط).
+- **Python 3.13 (موصى).** ثبّته من [python.org](https://www.python.org/downloads/)
+  مع تفعيل خيار **"Add python.exe to PATH"** أثناء التثبيت (وهذا يثبّت أيضًا مُشغّل
+  `py` الذي يعتمد عليه `run.bat` و `EasyTer.vbs`).
+  - لماذا 3.13: إصدار `pywinpty` المستقرّ (2.x) لا يملك عجلةً (wheel) لـ Python 3.14،
+    فيجلب 3.14 إصدار `pywinpty` 3.x (إعادة كتابة) الذي **يجمّد** البرامج التفاعليّة
+    ملء الشاشة مثل Claude Code وvim. لذا تثبّت المُشغّلات `pyw -3.13`، ويثبّت
+    `requirements.txt` القيد `pywinpty<3`، للبقاء على الحزمة المختبَرة.
+- **حزم Python:** `PySide6` (≥ 6.5)، و`pywinpty` (2.x)، و`pyte`، و`wcwidth`.
+  تُثبَّت تلقائيًّا عبر `install.bat` (أو `pip install -r requirements.txt`).
+
+تفحص EasyTer هذه المتطلّبات عند الإقلاع: إن كان Python قديمًا أو حزمةٌ ناقصة، تعرض
+صندوق رسالةٍ يخبرك بالضبط بما عليك تثبيته، بدل أن تفشل بصمت.
 
 ## التثبيت
 
@@ -92,7 +103,8 @@ pythonw EasyTer.py
 | `Ctrl+Shift+↑` / `Ctrl+Shift+↓` | القفز للأمر السابق / التالي |
 | `Ctrl+Shift+Space` | وضع النسخ (تحديد السجلّ بلوحة المفاتيح) |
 | `Ctrl` + نقر | فتح رابط |
-| `Ctrl+Shift+C` / `Ctrl+Shift+V` | نسخ / لصق |
+| `Ctrl+C` / `Ctrl+V` | نسخ التحديد (وإلّا مقاطعة) / لصق |
+| `Ctrl+Shift+C` / `Ctrl+Shift+V` | نسخ / لصق (دائمًا) |
 | `Ctrl+F` | بحث |
 | `F2` | وضع كلود (BiDi) — يدويّ/تلقائيّ |
 | `Ctrl++` / `Ctrl+-` / `Ctrl+0` | تكبير / تصغير / إعادة حجم الخطّ |
