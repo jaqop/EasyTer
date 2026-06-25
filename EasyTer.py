@@ -141,6 +141,7 @@ SETTINGS = {
     "quake_enabled": True,     # global hotkey (Ctrl+Alt+`) to summon/hide EasyTer from anywhere
     "paste_protection": True,  # confirm before pasting multi-line / large clipboard text
     "scrollback": 10000,       # lines of history kept per terminal
+    "favorite_themes": [],     # themes hearted in the appearance gallery (shown first)
 }
 
 
@@ -2403,6 +2404,7 @@ class ThemeCard(QWidget):
     """A clickable preview card for one theme: name, a sample prompt line with
     connected Arabic, and a row of ANSI swatches. Clicking applies it live."""
     chosen = Signal(str)
+    favorited = Signal(str)     # the heart was clicked (toggle favorite)
     SWATCHES = ("red", "green", "yellow", "blue", "magenta", "cyan", "brightblue", "brightmagenta")
 
     def __init__(self, name, current=False):
@@ -2412,6 +2414,7 @@ class ThemeCard(QWidget):
         self.bg, self.fg = bg, fg
         self.ansi = {**DEFAULT_PALETTE, **ansi} if ansi else DEFAULT_PALETTE
         self.current = current
+        self.fav = name in SETTINGS.get("favorite_themes", [])
         self.setFixedSize(232, 138)
         self.setCursor(Qt.PointingHandCursor)
 
@@ -2419,9 +2422,17 @@ class ThemeCard(QWidget):
         self.current = c
         self.update()
 
+    def _heart_rect(self):
+        return QRect(self.width() - 32, 8, 24, 22)
+
     def mousePressEvent(self, e):
         if e.button() == Qt.LeftButton:
-            self.chosen.emit(self.name)
+            if self._heart_rect().adjusted(-4, -4, 4, 4).contains(e.position().toPoint()):
+                self.fav = not self.fav
+                self.update()
+                self.favorited.emit(self.name)
+            else:
+                self.chosen.emit(self.name)
 
     def paintEvent(self, _e):
         p = QPainter(self)
@@ -2435,12 +2446,16 @@ class ThemeCard(QWidget):
             p.drawRoundedRect(2, 2, self.width() - 4, self.height() - 4, 10, 10)
             p.setPen(fg)
             p.setFont(QFont("Segoe UI", 10, QFont.Bold))
-            p.drawText(14, 9, self.width() - 28, 20, Qt.AlignLeft | Qt.AlignVCenter, self.name)
-            if self.current:
-                p.setPen(QColor("#4c9aff"))
-                p.setFont(QFont("Segoe UI", 8, QFont.Bold))
-                p.drawText(0, 11, self.width() - 14, 16,
-                           Qt.AlignRight | Qt.AlignVCenter, i18n.t("gallery.current"))
+            p.drawText(14, 9, self.width() - 46, 20, Qt.AlignLeft | Qt.AlignVCenter, self.name)
+            # favorite heart (top-right; clicking it toggles the favorite)
+            hr = self._heart_rect()
+            p.setFont(QFont("Segoe UI Symbol", 12))
+            if self.fav:
+                p.setPen(QColor("#ff5b77"))
+                p.drawText(hr, Qt.AlignCenter, "♥")     # filled heart
+            else:
+                p.setPen(QColor(255, 255, 255, 70))
+                p.drawText(hr, Qt.AlignCenter, "♡")     # outline heart
             p.setFont(QFont("Consolas", 9))
             x, y = 14, 52
             for txt, col in (("admin", a.get("green")), ("@", a.get("brightblack")),
@@ -2505,6 +2520,8 @@ class AppearanceGallery(QDialog):
     def _rebuild(self, _=None):
         q = self.search.text().strip().lower()
         names = [n for n in THEMES if not q or q in n.lower()]
+        favset = set(SETTINGS.get("favorite_themes", []))
+        names = [n for n in names if n in favset] + [n for n in names if n not in favset]
         shown = names[:self.MAX_CARDS]
         self.count.setText(i18n.t("gallery.count", total=len(names), shown=len(shown)))
         holder = QWidget()
@@ -2516,9 +2533,19 @@ class AppearanceGallery(QDialog):
         for i, name in enumerate(shown):
             card = ThemeCard(name, current=(name == self.current_name))
             card.chosen.connect(self._on_chosen)
+            card.favorited.connect(self._on_favorited)
             grid.addWidget(card, i // 3, i % 3)
             self._cards.append(card)
         self.scroll.setWidget(holder)
+
+    def _on_favorited(self, name):
+        favs = list(SETTINGS.get("favorite_themes", []))
+        if name in favs:
+            favs.remove(name)
+        else:
+            favs.append(name)
+        SETTINGS["favorite_themes"] = favs
+        save_settings()
 
     def _on_chosen(self, name):
         self.current_name = name
