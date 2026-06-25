@@ -2486,8 +2486,16 @@ class ThemeCard(QWidget):
                      else QPen(QColor(255, 255, 255, 40), 1))
             p.drawRoundedRect(2, 2, self.width() - 4, self.height() - 4, 10, 10)
             p.setPen(fg)
-            p.setFont(QFont("Segoe UI", 10, QFont.Bold))
+            name_font = QFont("Segoe UI", 10, QFont.Bold)
+            p.setFont(name_font)
             p.drawText(14, 9, self.width() - 46, 20, Qt.AlignLeft | Qt.AlignVCenter, self.name)
+            # favorited themes get a heart-with-arrow right after the name
+            if self.fav:
+                nw = min(QFontMetrics(name_font).horizontalAdvance(self.name),
+                         self.width() - 60)
+                p.setFont(QFont("Segoe UI Emoji", 10))
+                p.drawText(14 + nw + 5, 9, 22, 20,
+                           Qt.AlignLeft | Qt.AlignVCenter, "\U0001F498")
             # favorite heart (top-right; clicking it toggles the favorite)
             hr = self._heart_rect()
             p.setFont(QFont("Segoe UI Symbol", 12))
