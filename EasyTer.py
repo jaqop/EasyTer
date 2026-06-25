@@ -740,7 +740,13 @@ class PtyBackend(QObject):
                 setup = ""
                 pt = SETTINGS.get("prompt_theme") or ""
                 if pt and os.path.exists(pt):   # chosen oh-my-posh prompt theme first
-                    setup = "oh-my-posh init pwsh --config '%s' | Invoke-Expression; " % pt.replace("'", "''")
+                    # "powershell" init for Windows PowerShell 5.1, "pwsh" for 7+;
+                    # errors silenced (old PSReadLine rejects the pwsh key-handlers).
+                    init_shell = "pwsh" if "pwsh" in exe else "powershell"
+                    setup = ("$ErrorActionPreference='SilentlyContinue'; "
+                             "oh-my-posh init %s --config '%s' | Invoke-Expression; "
+                             "$ErrorActionPreference='Continue'; "
+                             % (init_shell, pt.replace("'", "''")))
                 spec = spec + ["-NoExit", "-Command", setup + PS_SHELL_INTEGRATION]
         # start the shell in: the requested dir (new tab/split inherits the
         # current tab's directory), else the configured start folder, else home —
