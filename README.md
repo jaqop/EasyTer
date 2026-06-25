@@ -26,16 +26,29 @@ WSL, Claude Code, vim, …).
 ## Features
 
 - **Connected Arabic** via QTextLayout (HarfBuzz shaping + UAX #9 BiDi).
-- **Tabs** and **split panes** (side-by-side / top-bottom), draggable dividers.
-- **Themes** (multiple built-in) with full UI theming, free ANSI color editing, and
-  adjustable background opacity.
+- **Tabs** and **split panes** (side-by-side / top-bottom), draggable dividers, pane
+  **zoom**, **broadcast input** to all panes, and **reopen the last closed tab**.
+- **New tabs/splits open in the current directory** (OSC 7 / 9;9), and tabs show
+  **dynamic titles** that follow the working directory.
+- **Command blocks** (OSC 133 shell integration): a green/red gutter bar marks each
+  command's success/failure, and `Ctrl+Shift+↑/↓` jumps between commands.
+- **Themes** — 15+ built-in (Dracula, Nord, Tokyo Night, Gruvbox, Catppuccin, One
+  Dark, Monokai, Solarized, Kali Dark, …) plus full UI theming, free ANSI color
+  editing, adjustable opacity, and an optional **background image**.
 - **Search** (`Ctrl+F`) over the logical text, so Arabic matches correctly.
-- **Embedded editor** pane with syntax highlighting and line numbers.
+- **Embedded editor** pane with syntax highlighting and line numbers (handles large
+  files efficiently).
+- **Clickable links** (`Ctrl`+click), **multiple cursor styles**, **paste protection**
+  + bracketed paste, and **OSC 52 clipboard** (programs can set the clipboard).
+- **Desktop notification** when a long command finishes while EasyTer is in the
+  background.
+- **Quake-style global hotkey** (`Ctrl+Alt+`​`) to summon/hide EasyTer from anywhere.
 - **Python plugin API** — keybindings, commands, themes, event hooks, status
   segments (see `examples/init.py`).
-- **Shell auto-detect**: PowerShell, cmd, Git Bash, WSL.
+- **Shell auto-detect** (PowerShell, cmd, Git Bash, WSL), **session save/restore**,
+  configurable scrollback, fast throttled rendering.
 - **Claude mode** — automatic BiDi handling for Claude Code's full-screen UI.
-- Bilingual UI: **English (default)** and Arabic.
+- Bilingual UI: **English (default)** and Arabic. Local-first, **no telemetry**.
 
 ## Requirements
 
@@ -72,17 +85,23 @@ The UI is English by default. To switch to Arabic: **Settings (`Ctrl+,`) → Lan
 | Keys | Action |
 |------|--------|
 | `Ctrl+T` · `+` | New tab |
+| `Ctrl+Shift+T` | Reopen the last closed tab |
 | `Ctrl+Tab` / `Ctrl+Shift+Tab` | Next / previous tab |
 | `Ctrl+Shift+E` / `Ctrl+Shift+O` | Split side-by-side / top-bottom |
 | `Ctrl+Shift+N` | Open editor beside terminal |
 | `Ctrl+Shift+W` | Close pane (last one closes the tab) |
+| `Ctrl+Shift+Z` | Maximize / restore the active pane |
+| `Ctrl+Shift+B` | Broadcast typing to all panes |
 | `Alt + Arrows` | Move between panes |
+| `Ctrl+Shift+↑` / `Ctrl+Shift+↓` | Jump to previous / next command |
+| `Ctrl` + click | Open a link |
 | `Ctrl+Shift+C` / `Ctrl+Shift+V` | Copy / paste |
 | `Ctrl+F` | Search |
 | `F2` | Claude mode (BiDi) — manual/auto |
 | `Ctrl++` / `Ctrl+-` / `Ctrl+0` | Zoom in / out / reset font |
 | `Ctrl+,` · ⚙ | Settings |
 | `Ctrl+Shift+P` | Command palette (plugin commands) |
+| `Ctrl+Alt+`​` | Summon / hide EasyTer (global, works anywhere) |
 | `F1` · `?` | All shortcuts |
 
 ## Plugins
