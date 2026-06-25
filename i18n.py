@@ -119,6 +119,7 @@ STRINGS = {
         "dialog.pick_ansi": "Choose color: {name}",
         # default tab name
         "tab.default": "Terminal {n}",
+        "term.starting": "starting the shell…",
         # claude-mode badge / labels
         "badge.claude_auto": " ●Claude mode  auto ",
         "badge.claude_manual": " ●Claude mode  manual ",
@@ -284,6 +285,7 @@ STRINGS = {
         "dialog.pick_fg": "اختر لون النصّ",
         "dialog.pick_ansi": "اختر لوناً: {name}",
         "tab.default": "طرفيّة {n}",
+        "term.starting": "تبدأ الصدفة…",
         "badge.claude_auto": " ●وضع كلود  تلقائيّ ",
         "badge.claude_manual": " ●وضع كلود  يدويّ ",
         "badge.copy_mode": "● وضع النسخ  ·  v تحديد · y نسخ · Esc خروج",

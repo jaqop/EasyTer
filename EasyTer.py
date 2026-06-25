@@ -1009,6 +1009,11 @@ class TerminalWidget(QWidget):
         self._layout_cache = {}
         self._run_cache = {}
 
+        # show a "starting…" hint until the shell produces its first output
+        # (conhost/ConPTY cold-start can take a couple of seconds), so the
+        # terminal looks alive instead of blank while the prompt is on its way
+        self._first_output = False
+
         # throttle the paint rate: coalesce Claude's fast bursts into one paint every ~16ms
         self._repaint_timer = QTimer(self)
         self._repaint_timer.setSingleShot(True)
@@ -1125,6 +1130,7 @@ class TerminalWidget(QWidget):
 
     # ---------- backend signals ----------
     def _on_data(self):
+        self._first_output = True
         if not self.copy_mode:
             self.scroll_offset = 0  # jump to the bottom when new output arrives
         # throttle: one paint every ~16ms no matter how fast bursts arrive (prevents slowdown)
@@ -1281,6 +1287,16 @@ class TerminalWidget(QWidget):
                     p.setPen(pen)
                     p.setBrush(Qt.NoBrush)
                     p.drawRect(crect.adjusted(0, 0, -1, -1))
+
+            # "starting…" hint: shown next to the cursor until the shell's first
+            # output, so the terminal looks alive during the conhost cold-start
+            if not self._first_output and not self.claude_mode and self.scroll_offset == 0:
+                p.setFont(self.font)
+                hint = QColor(BASE_FG)
+                hint.setAlpha(110)
+                p.setPen(hint)
+                p.drawText(int(self._cwi * 1.5), 0, self.width(), self.ch,
+                           Qt.AlignLeft | Qt.AlignVCenter, i18n.t("term.starting"))
 
             # copy-mode cursor: the keyboard navigation cursor over the scrollback
             if self.copy_mode and self.copy_cursor is not None:
