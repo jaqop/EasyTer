@@ -2353,9 +2353,22 @@ class EditorWidget(QWidget):
         self.header = QLabel("")
         self.header.setToolTip(i18n.t("editor.rename_tip"))
         self.header.installEventFilter(self)
+        close_btn = QPushButton("×")
+        close_btn.setFixedSize(22, 20)
+        close_btn.setToolTip(i18n.t("menu.close_pane").split("\t")[0])
+        close_btn.setStyleSheet(
+            "QPushButton{border:none;background:transparent;color:#9aa4b2;font-size:16px;}"
+            "QPushButton:hover{color:#ff6b6b;}")
+        close_btn.clicked.connect(self._close_self)
+        hbar = QWidget()
+        hb = QHBoxLayout(hbar)
+        hb.setContentsMargins(0, 0, 4, 0)
+        hb.setSpacing(0)
+        hb.addWidget(self.header, 1)
+        hb.addWidget(close_btn)
         self.edit = CodeEdit(self)
         self.highlighter = CodeHighlighter(self.edit.document())
-        v.addWidget(self.header)
+        v.addWidget(hbar)
         v.addWidget(self.edit, 1)
         self.setFocusProxy(self.edit)
         self.edit.modificationChanged.connect(lambda *_: self._update_header())
@@ -2364,6 +2377,13 @@ class EditorWidget(QWidget):
             self.open_path(path)
         else:
             self._update_header()
+
+    def _close_self(self):
+        w = self.parentWidget()
+        while w is not None and not isinstance(w, SessionWidget):
+            w = w.parentWidget()
+        if isinstance(w, SessionWidget):
+            w.close_pane(self)
 
     def eventFilter(self, obj, ev):
         if obj is self.header and ev.type() == ev.Type.MouseButtonDblClick:
@@ -2565,16 +2585,30 @@ class SessionWidget(QWidget):
         return self.findChildren(TerminalWidget) + self.findChildren(EditorWidget)
 
     def toggle_zoom(self, pane):
-        """Maximize this pane (hide its siblings) or restore the split layout."""
-        if getattr(self, "_zoom_hidden", None):
-            for w in self._zoom_hidden:
-                w.setVisible(True)
-            self._zoom_hidden = []
+        """Maximize this pane, or restore the split layout.
+
+        Hiding siblings leaves empty slots in a QSplitter, so instead we collapse
+        every sibling along the path from the pane to the root to size 0 (and
+        restore the saved sizes on the second press)."""
+        if getattr(self, "_zoom_state", None):
+            for sp, sizes, collap in self._zoom_state:
+                if sp is not None:
+                    sp.setChildrenCollapsible(collap)
+                    sp.setSizes(sizes)
+            self._zoom_state = None
         else:
-            self._zoom_hidden = [p for p in self._all_panes() if p is not pane]
-            for p in self._zoom_hidden:
-                p.setVisible(False)
-        pane.setVisible(True)
+            state = []
+            w = pane
+            parent = w.parentWidget()
+            while isinstance(parent, QSplitter):
+                state.append((parent, parent.sizes(), parent.childrenCollapsible()))
+                idx = parent.indexOf(w)
+                parent.setChildrenCollapsible(True)
+                full = max(parent.width(), parent.height())
+                parent.setSizes([full if i == idx else 0 for i in range(parent.count())])
+                w = parent
+                parent = w.parentWidget()
+            self._zoom_state = state or None
         pane.setFocus()
 
     def close_all(self):
