@@ -90,6 +90,7 @@ pythonw EasyTer.py
 | `Ctrl+Shift+B` | بثّ الكتابة لكلّ الألواح |
 | `Alt + الأسهم` | التنقّل بين الألواح |
 | `Ctrl+Shift+↑` / `Ctrl+Shift+↓` | القفز للأمر السابق / التالي |
+| `Ctrl+Shift+Space` | وضع النسخ (تحديد السجلّ بلوحة المفاتيح) |
 | `Ctrl` + نقر | فتح رابط |
 | `Ctrl+Shift+C` / `Ctrl+Shift+V` | نسخ / لصق |
 | `Ctrl+F` | بحث |

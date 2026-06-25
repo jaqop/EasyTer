@@ -928,6 +928,8 @@ class TerminalWidget(QWidget):
         # mouse text-selection state (absolute coordinates across the whole history)
         self.sel_anchor = None   # (abs_line, col)
         self.sel_point = None
+        self.copy_mode = False   # keyboard scrollback navigation/selection (vim/tmux style)
+        self.copy_cursor = None  # [abs_line, col] of the keyboard cursor in copy mode
         self._paint_start = 0    # first absolute line shown in the last paint
 
         # Claude mode: reverses Claude's visual BiDi to logical. Enabled **automatically** when
@@ -1057,7 +1059,8 @@ class TerminalWidget(QWidget):
 
     # ---------- backend signals ----------
     def _on_data(self):
-        self.scroll_offset = 0  # jump to the bottom when new output arrives
+        if not self.copy_mode:
+            self.scroll_offset = 0  # jump to the bottom when new output arrives
         # throttle: one paint every ~16ms no matter how fast bursts arrive (prevents slowdown)
         if not self._repaint_timer.isActive():
             self._repaint_timer.start(16)
@@ -1190,6 +1193,17 @@ class TerminalWidget(QWidget):
                     p.setBrush(Qt.NoBrush)
                     p.drawRect(crect.adjusted(0, 0, -1, -1))
 
+            # copy-mode cursor: the keyboard navigation cursor over the scrollback
+            if self.copy_mode and self.copy_cursor is not None:
+                cyi = self.copy_cursor[0] - start
+                if 0 <= cyi < self.rows:
+                    pen = QPen(QColor("#f2cc60"))
+                    pen.setWidth(2)
+                    p.setPen(pen)
+                    p.setBrush(Qt.NoBrush)
+                    p.drawRect(QRect(int(self.copy_cursor[1] * self.cw),
+                                     cyi * self.ch, self.cw, self.ch))
+
             # command-block markers: a thin bar in the left gutter at each prompt
             # line (green = success, red = failure, grey = unknown/running)
             if self.backend.command_marks:
@@ -1239,6 +1253,16 @@ class TerminalWidget(QWidget):
             p.fillRect(QRect(bx, 4, tw, bh), QColor(46, 160, 67))
             p.setPen(QColor("#ffffff"))
             p.drawText(QRect(bx, 4, tw, bh), Qt.AlignCenter, label)
+
+        # copy-mode badge (top left)
+        if self.copy_mode:
+            label = i18n.t("badge.copy_mode")
+            fm = QFontMetrics(self.font)
+            tw = fm.horizontalAdvance(label) + 12
+            bh = self.ch + 6
+            p.fillRect(QRect(6, 4, tw, bh), QColor(242, 204, 96))
+            p.setPen(QColor("#1a1a1a"))
+            p.drawText(QRect(6, 4, tw, bh), Qt.AlignCenter, label)
 
         # border marking the focused pane (only when split)
         if isinstance(self.parentWidget(), QSplitter):
@@ -1423,8 +1447,17 @@ class TerminalWidget(QWidget):
         win = self.window()
         sess = self._session()
 
+        # copy mode owns the keyboard while active (navigate/select the scrollback)
+        if self.copy_mode:
+            self._copy_mode_key(key, ctrl, shift)
+            return
+
         # plugin keybindings (take priority)
         if run_plugin_keybind(self, ctrl, alt, shift, key):
+            return
+        # enter copy mode: Ctrl+Shift+Space
+        if ctrl and shift and key == Qt.Key_Space:
+            self._enter_copy_mode()
             return
         # command palette: Ctrl+Shift+P
         if ctrl and shift and key == Qt.Key_P:
@@ -1698,6 +1731,87 @@ class TerminalWidget(QWidget):
         txt = self._selection_text()
         if txt:
             QApplication.clipboard().setText(txt)
+
+    # ---------- copy mode (keyboard scrollback navigation/selection) ----------
+    def _enter_copy_mode(self):
+        if self.backend.alt_screen or self.copy_mode:
+            return
+        with self.backend.lock:
+            hlen = len(self.backend.screen.history.top)
+            lines = self.backend.screen.lines
+            cy = self.backend.screen.cursor.y
+        total = hlen + lines
+        self.copy_mode = True
+        self.copy_cursor = [min(max(0, hlen + cy), total - 1), 0]
+        self.sel_anchor = self.sel_point = None
+        self._ensure_copy_cursor_visible(total)
+        self.update()
+
+    def _exit_copy_mode(self, copy=False):
+        if copy and self._norm_sel():
+            self._copy_selection()
+        self.copy_mode = False
+        self.copy_cursor = None
+        self.sel_anchor = self.sel_point = None
+        self.scroll_offset = 0
+        self.update()
+
+    def _ensure_copy_cursor_visible(self, total):
+        if not self.copy_cursor:
+            return
+        with self.backend.lock:
+            maxoff = len(self.backend.screen.history.top)
+        line = self.copy_cursor[0]
+        top = max(0, total - self.rows - self.scroll_offset)
+        if line < top:
+            self.scroll_offset = total - self.rows - line
+        elif line >= top + self.rows:
+            self.scroll_offset = total - self.rows - (line - self.rows + 1)
+        self.scroll_offset = max(0, min(maxoff, self.scroll_offset))
+
+    def _copy_mode_key(self, key, ctrl, shift):
+        with self.backend.lock:
+            total = len(self.backend.screen.history.top) + self.backend.screen.lines
+            ncols = self.backend.screen.columns
+        if not self.copy_cursor:
+            self.copy_cursor = [total - 1, 0]
+        line, col = self.copy_cursor
+        if key == Qt.Key_Escape:
+            self._exit_copy_mode()
+            return
+        if key in (Qt.Key_Return, Qt.Key_Enter, Qt.Key_Y):
+            self._exit_copy_mode(copy=True)
+            return
+        if key in (Qt.Key_Space, Qt.Key_V):                  # start/restart selection
+            self.sel_anchor = (line, col)
+            self.sel_point = (line, col)
+            self.update()
+            return
+        if key in (Qt.Key_Left, Qt.Key_H):
+            col = max(0, col - 1)
+        elif key in (Qt.Key_Right, Qt.Key_L):
+            col = min(ncols, col + 1)
+        elif key in (Qt.Key_Up, Qt.Key_K):
+            line = max(0, line - 1)
+        elif key in (Qt.Key_Down, Qt.Key_J):
+            line = min(total - 1, line + 1)
+        elif key == Qt.Key_PageUp:
+            line = max(0, line - self.rows)
+        elif key == Qt.Key_PageDown:
+            line = min(total - 1, line + self.rows)
+        elif key == Qt.Key_Home:
+            col = 0
+        elif key == Qt.Key_End:
+            col = ncols
+        elif key == Qt.Key_G:
+            line = (total - 1) if shift else 0
+        else:
+            return
+        self.copy_cursor = [line, col]
+        if self.sel_anchor is not None:
+            self.sel_point = (line, col)
+        self._ensure_copy_cursor_visible(total)
+        self.update()
 
     # ---------- search the output (Ctrl+F) ----------
     def _line_logical_text(self, row, ncols):
@@ -2848,6 +2962,7 @@ SHORTCUTS = [
         ("sck.clip.wheel", "sc.clip.wheel"),
         ("sck.clip.link", "sc.clip.link"),
         ("sck.clip.cmdjump", "sc.clip.cmdjump"),
+        ("sck.clip.copymode", "sc.clip.copymode"),
     ]),
     ("sc.cat.arabic", [
         ("sck.arabic.f2", "sc.arabic.f2"),

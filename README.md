@@ -94,6 +94,7 @@ The UI is English by default. To switch to Arabic: **Settings (`Ctrl+,`) → Lan
 | `Ctrl+Shift+B` | Broadcast typing to all panes |
 | `Alt + Arrows` | Move between panes |
 | `Ctrl+Shift+↑` / `Ctrl+Shift+↓` | Jump to previous / next command |
+| `Ctrl+Shift+Space` | Copy mode (keyboard-select the scrollback) |
 | `Ctrl` + click | Open a link |
 | `Ctrl+Shift+C` / `Ctrl+Shift+V` | Copy / paste |
 | `Ctrl+F` | Search |
