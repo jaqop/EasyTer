@@ -87,8 +87,11 @@ PS_SHELL_INTEGRATION = (
     # __et_set_prompt: switch the oh-my-posh theme live, then re-wrap.
     "function global:__et_set_prompt($cfg){"
     "$global:__ET_SI=$false;$ErrorActionPreference='SilentlyContinue';"
-    "$s=if($global:__ET_SHELL){$global:__ET_SHELL}else{'powershell'};"
-    "oh-my-posh init $s --config $cfg|Invoke-Expression;"
+    # Detect the real host edition at runtime: Desktop=Windows PowerShell 5.1
+    # (init 'powershell'), Core=PowerShell 7 (init 'pwsh'). Never trust a guess
+    # from the spawner -- a wrong choice runs PS7-only PSReadLine code in 5.1.
+    "$s=if($PSVersionTable.PSEdition -eq 'Core'){'pwsh'}else{'powershell'};"
+    "& {oh-my-posh init $s --config $cfg|Invoke-Expression} 2>$null;"
     "$ErrorActionPreference='Continue';__et_wrap};"
     "__et_wrap"
 )
@@ -747,15 +750,16 @@ class PtyBackend(QObject):
             exe = spec[0].lower()
             has_cmd = any(a.lower() in ("-command", "-c", "-file", "-encodedcommand") for a in spec)
             if ("powershell" in exe or "pwsh" in exe) and not has_cmd:
-                # "powershell" init for Windows PowerShell 5.1, "pwsh" for 7+
-                init_shell = "pwsh" if "pwsh" in exe else "powershell"
-                setup = "$global:__ET_SHELL='%s'; " % init_shell
+                setup = ""
                 pt = SETTINGS.get("prompt_theme") or ""
                 if pt and os.path.exists(pt):   # chosen oh-my-posh prompt theme first
+                    # detect edition at runtime (Desktop=5.1 'powershell',
+                    # Core=7 'pwsh') so PS7-only init code never runs in 5.1
                     setup += ("$ErrorActionPreference='SilentlyContinue'; "
-                              "oh-my-posh init %s --config '%s' | Invoke-Expression; "
+                              "$__s=if($PSVersionTable.PSEdition -eq 'Core'){'pwsh'}else{'powershell'}; "
+                              "& {oh-my-posh init $__s --config '%s' | Invoke-Expression} 2>$null; "
                               "$ErrorActionPreference='Continue'; "
-                              % (init_shell, pt.replace("'", "''")))
+                              % pt.replace("'", "''"))
                 spec = spec + ["-NoExit", "-Command", setup + PS_SHELL_INTEGRATION]
         # start the shell in: the requested dir (new tab/split inherits the
         # current tab's directory), else the configured start folder, else home —
@@ -3782,8 +3786,10 @@ class MainWindow(QWidget):
     def _apply_prompt_theme(self, path):
         SETTINGS["prompt_theme"] = path   # new tabs init oh-my-posh with this theme
         save_settings()
-        # also apply live to open PowerShell terminals sitting at a prompt
-        cmd = "__et_set_prompt '%s'\r" % path.replace("'", "''")
+        # also apply live to open PowerShell terminals sitting at a prompt.
+        # Re-send the integration first so sessions started by an older build
+        # get the current (fixed) __et_set_prompt before it runs.
+        cmd = PS_SHELL_INTEGRATION + ";__et_set_prompt '%s'\r" % path.replace("'", "''")
         for t in self.findChildren(TerminalWidget):
             cs = " ".join(t.command) if isinstance(t.command, list) else str(t.command)
             if ("powershell" in cs.lower() or "pwsh" in cs.lower()) and not t.backend.alt_screen:
