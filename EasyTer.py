@@ -176,7 +176,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QMenu,
     QSplitter, QDialog, QSpinBox, QPushButton, QLabel, QColorDialog, QFontComboBox,
-    QTabWidget, QLineEdit, QPlainTextEdit, QFileDialog, QSlider, QInputDialog,
+    QTabWidget, QLineEdit, QPlainTextEdit, QFileDialog, QSlider, QInputDialog, QCheckBox,
     QTextEdit, QComboBox, QScrollArea, QFrame, QSystemTrayIcon,
 )
 
@@ -206,6 +206,7 @@ SETTINGS = {
     "shell_integration": True, # inject OSC 133 into PowerShell for command blocks
     "ps_load_profile": False,  # load the user's PowerShell profile (slower start); EasyTer self-provides prompt + UTF-8
     "notify_on_finish": True,  # desktop notification when a long command finishes unfocused
+    "busy_dot": True,          # show a dot on a background tab while it is producing output
     "quake_enabled": True,     # global hotkey (Ctrl+Alt+`) to summon/hide EasyTer from anywhere
     "paste_protection": True,  # confirm before pasting multi-line / large clipboard text
     "scrollback": 10000,       # lines of history kept per terminal
@@ -2516,6 +2517,11 @@ class SettingsDialog(QDialog):
         lw.setLayout(lang_row)
         g.addWidget(lw, 11, 1)
 
+        # busy-dot toggle (a dot marks a background tab while it is producing output)
+        self.busy_dot_chk = QCheckBox(i18n.t("settings.busy_dot"))
+        self.busy_dot_chk.setChecked(bool(SETTINGS.get("busy_dot", True)))
+        g.addWidget(self.busy_dot_chk, 12, 0, 1, 2)
+
         # fixed button bar below the scroll area (always visible)
         btns = QHBoxLayout()
         btns.setContentsMargins(16, 8, 16, 12)
@@ -2634,6 +2640,7 @@ class SettingsDialog(QDialog):
         SETTINGS["bg_image_opacity"] = self.bg_image_opacity
         SETTINGS["start_dir"] = self.start_dir
         SETTINGS["cursor_style"] = self.cursor_combo.currentData()
+        SETTINGS["busy_dot"] = self.busy_dot_chk.isChecked()
         save_settings()
         i18n.set_language(SETTINGS["language"])   # live: menus/dialogs/shortcuts switch on next open
         apply_base_colors()
@@ -3973,7 +3980,8 @@ class MainWindow(QWidget):
         w = self.tabs.widget(idx)
         if not isinstance(w, SessionWidget):
             return
-        busy = (idx != self.tabs.currentIndex()
+        busy = (SETTINGS.get("busy_dot", True)
+                and idx != self.tabs.currentIndex()
                 and any(getattr(t, "_busy", False) for t in w._all_terms()))
         self.tabs.setTabIcon(idx, self._busy_icon if busy else QIcon())
 
@@ -4162,6 +4170,8 @@ class MainWindow(QWidget):
             t.update()
         for e in self.findChildren(EditorWidget):
             e.apply_theme()
+        for i in range(self.tabs.count()):      # busy-dot setting may have changed
+            self._apply_tab_busy(i)
         self.update()
 
     def closeEvent(self, event):
