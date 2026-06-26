@@ -120,6 +120,9 @@ STRINGS = {
         "dialog.pick_ansi": "Choose color: {name}",
         # default tab name
         "tab.default": "Terminal {n}",
+        "tab.tip_running": "Running: {cmd}",
+        "tab.tip_idle": "Idle · {cwd}",
+        "tab.tip_idle_nocwd": "Idle at the prompt",
         "term.starting": "starting the shell…",
         # claude-mode badge / labels
         "badge.claude_auto": " ●Claude mode  auto ",
@@ -287,6 +290,9 @@ STRINGS = {
         "dialog.pick_fg": "اختر لون النصّ",
         "dialog.pick_ansi": "اختر لوناً: {name}",
         "tab.default": "طرفيّة {n}",
+        "tab.tip_running": "قيد التشغيل: {cmd}",
+        "tab.tip_idle": "خامل · {cwd}",
+        "tab.tip_idle_nocwd": "خامل عند المُحِث",
         "term.starting": "تبدأ الصدفة…",
         "badge.claude_auto": " ●وضع كلود  تلقائيّ ",
         "badge.claude_manual": " ●وضع كلود  يدويّ ",

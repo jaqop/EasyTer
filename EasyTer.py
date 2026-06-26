@@ -493,7 +493,8 @@ def _is_ltr_char(ch):
         return False
     o = ord(ch[0])   # base codepoint only; a cell may hold emoji+selector/ZWJ
     return (0x41 <= o <= 0x5A) or (0x61 <= o <= 0x7A) or \
-           (0x30 <= o <= 0x39) or (0xC0 <= o <= 0x2AF)
+           (0x30 <= o <= 0x39) or (0xC0 <= o <= 0x2AF) or \
+           (0x0660 <= o <= 0x0669) or (0x06F0 <= o <= 0x06F9)  # Arabic-Indic / Persian digits
 
 
 def _is_inner_ltr(ch):
@@ -505,6 +506,10 @@ def _is_arabic_letter(ch):
     if not ch:
         return False
     o = ord(ch[0])   # base codepoint only; a cell may hold emoji+selector/ZWJ
+    # Arabic-Indic / Persian digits are numbers, not letters: like 0-9 they form a
+    # weak LTR run and must keep their digit order (so ١٧٥ doesn't flip to ٥٧١).
+    if (0x0660 <= o <= 0x0669) or (0x06F0 <= o <= 0x06F9):
+        return False
     return (0x0600 <= o <= 0x06FF) or (0x0750 <= o <= 0x077F) or \
            (0xFB50 <= o <= 0xFDFF) or (0xFE70 <= o <= 0xFEFF)
 
@@ -798,6 +803,7 @@ class PtyBackend(QObject):
     command_ended = Signal(object)     # a command finished (OSC 133 D); arg = exit code or None
     clipboard_set = Signal(str)        # a program set the clipboard via OSC 52
     cwd_changed = Signal(str)          # working directory changed (for dynamic tab titles)
+    cmd_changed = Signal()             # the running command started/ended (for the tab tooltip)
 
     def __init__(self, cols, rows, command="powershell.exe", start_cwd=None):
         super().__init__()
@@ -810,6 +816,9 @@ class PtyBackend(QObject):
         self.at_prompt = False      # idle at an interactive prompt (OSC 133 B, no command running)
         self.bracketed_paste = False  # does the program want bracketed paste (?2004h)?
         self.cwd = None             # current working directory (from OSC 9;9 / OSC 7)
+        self.running_cmd = ""       # the command line currently executing ("" = idle at prompt)
+        self._prompt_col = None     # screen column where the prompt ends / input begins (OSC 133 B)
+        self._prompt_row = None     # screen row of that prompt (to read the typed line on submit)
         self._scan_tail = ""        # tail to catch a sequence split across two reads
         self._carry = ""            # incomplete sequence carried to the next read
         # command blocks: each entry = [prompt_abs_line, exit_code_or_None],
@@ -903,6 +912,7 @@ class PtyBackend(QObject):
             return
         pos = 0
         ended = []
+        cmd_dirty = False
         with self.lock:
             for m in OSC133_RE.finditer(data):
                 seg = data[pos:m.start()]
@@ -915,8 +925,14 @@ class PtyBackend(QObject):
                     self.command_marks.append([abs_line, None])
                     if len(self.command_marks) > 2000:
                         del self.command_marks[:1000]
+                    if self.running_cmd:            # back to idle
+                        self.running_cmd = ""
+                        cmd_dirty = True
                 elif kind == "B":                   # prompt drawn, now waiting for input
                     self.at_prompt = True
+                    # remember where input begins so the submitted line can be read
+                    self._prompt_col = self.screen.cursor.x
+                    self._prompt_row = self.screen.cursor.y
                 elif kind == "D":                           # the command just finished
                     code = None
                     if params:
@@ -927,12 +943,17 @@ class PtyBackend(QObject):
                     if self.command_marks:
                         self.command_marks[-1][1] = code
                     ended.append(code)
+                    if self.running_cmd:
+                        self.running_cmd = ""
+                        cmd_dirty = True
                 pos = m.end()
             tail = data[pos:]
             if tail:
                 self.stream.feed(tail)
         for code in ended:                 # notify outside the lock
             self.command_ended.emit(code)
+        if cmd_dirty:
+            self.cmd_changed.emit()
 
     def _scan_alt(self, data):
         """Detects entering/leaving the alternate screen (?1049h/?1049l) to enable Claude mode automatically."""
@@ -1001,12 +1022,27 @@ class PtyBackend(QObject):
             return
         # submitting a line (Enter) starts a command -> no longer idle at the
         # prompt, until the next OSC 133 'B'. Skip while pasting bracketed text.
+        cmd_dirty = False
         if "\r" in text and not self.bracketed_paste:
             self.at_prompt = False
+            # read the command line straight off the screen (the prompt is already
+            # echoed, so this captures history-recall/edited lines correctly too).
+            # Skip inside a full-screen TUI (Claude): its launch command is kept.
+            if not self.alt_screen and self._prompt_col is not None:
+                with self.lock:
+                    cur = self.screen.cursor
+                    rows = self.screen.display
+                    if 0 <= cur.y < len(rows):
+                        cmd = rows[cur.y][self._prompt_col:cur.x].strip()
+                        if cmd and cmd != self.running_cmd:
+                            self.running_cmd = cmd
+                            cmd_dirty = True
         try:
             self.proc.write(text)
         except Exception:
             pass
+        if cmd_dirty:
+            self.cmd_changed.emit()
 
     def resize(self, cols, rows):
         # ConPTY (conhost) reflows its content and repaints automatically on resize
@@ -1118,6 +1154,7 @@ class TerminalWidget(QWidget):
         self.backend.clipboard_set.connect(
             lambda txt: QApplication.clipboard().setText(txt))
         self.backend.cwd_changed.connect(self._on_cwd_changed)
+        self.backend.cmd_changed.connect(self._on_cmd_changed)
         self._cmd_started = None      # time the user submitted a command (for finish notify)
         self._exited = False
 
@@ -1232,6 +1269,13 @@ class TerminalWidget(QWidget):
         win = self.window()
         if win is not None and hasattr(win, "set_dynamic_tab_title"):
             win.set_dynamic_tab_title(self, os.path.basename(cwd) or cwd)
+        if win is not None and hasattr(win, "update_tab_tooltip"):
+            win.update_tab_tooltip(self)        # idle tooltip shows the new cwd
+
+    def _on_cmd_changed(self):
+        win = self.window()
+        if win is not None and hasattr(win, "update_tab_tooltip"):
+            win.update_tab_tooltip(self)
 
     def _on_command_ended(self, code):
         """Notify on the desktop when a long command finishes while EasyTer is
@@ -3990,6 +4034,29 @@ class MainWindow(QWidget):
         focused tab loses its dot and a still-working background tab regains one."""
         for i in range(self.tabs.count()):
             self._apply_tab_busy(i)
+
+    def update_tab_tooltip(self, pane):
+        """Set the tab's hover tooltip to the command running in it (per pane for
+        splits), or the idle prompt + working directory when nothing is running."""
+        w = pane.parentWidget()
+        while w is not None and not isinstance(w, SessionWidget):
+            w = w.parentWidget()
+        if not isinstance(w, SessionWidget):
+            return
+        idx = self.tabs.indexOf(w)
+        if idx < 0:
+            return
+        lines = []
+        for t in w._all_terms():
+            b = getattr(t, "backend", None)
+            cmd = getattr(b, "running_cmd", "") if b else ""
+            if cmd:
+                lines.append(i18n.t("tab.tip_running", cmd=cmd))
+            else:
+                cwd = (getattr(b, "cwd", None) if b else None) or ""
+                lines.append(i18n.t("tab.tip_idle", cwd=cwd) if cwd
+                             else i18n.t("tab.tip_idle_nocwd"))
+        self.tabs.setTabToolTip(idx, "\n".join(lines))
 
     def set_dynamic_tab_title(self, pane, title):
         """Update a tab's title from the pane's working directory, unless the
