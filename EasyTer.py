@@ -1091,6 +1091,7 @@ class TerminalWidget(QWidget):
         self._resize_timer.timeout.connect(self._recompute_size)
 
         self.setMouseTracking(True)   # needed for Ctrl+hover link hinting
+        self.setAcceptDrops(True)     # drop files onto a pane → insert their path at the prompt
         self._exited = False
         self._start_backend(self.command)
 
@@ -2102,6 +2103,50 @@ class TerminalWidget(QWidget):
 
     def _paste_clipboard(self):
         self._do_paste()
+
+    # ---------- drag & drop (drop files to insert their path) ----------
+    def dragEnterEvent(self, event):
+        md = event.mimeData()
+        if md.hasUrls() or md.hasText():
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event):
+        md = event.mimeData()
+        if md.hasUrls() or md.hasText():
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event):
+        if self._exited:
+            event.ignore()
+            return
+        md = event.mimeData()
+        parts = []
+        if md.hasUrls():
+            for url in md.urls():
+                if url.isLocalFile():
+                    # Windows shells expect backslash paths
+                    parts.append(url.toLocalFile().replace("/", "\\"))
+                else:
+                    parts.append(url.toString())
+        elif md.hasText():
+            parts.append(md.text())
+        if not parts:
+            event.ignore()
+            return
+        # quote any path containing whitespace so it reaches the shell intact
+        chunks = []
+        for pth in parts:
+            if any(ws in pth for ws in (" ", "\t")):
+                pth = '"' + pth.replace('"', '\\"') + '"'
+            chunks.append(pth)
+        self.setFocus()
+        self.scroll_offset = 0
+        self.backend.write(" ".join(chunks))
+        event.acceptProposedAction()
 
     def _do_paste(self):
         """Paste the clipboard, with optional protection (confirm multi-line/large
