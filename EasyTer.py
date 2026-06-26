@@ -48,9 +48,9 @@ def _fatal(msg):
 
 
 if sys.version_info < (3, 8):
-    _fatal("EasyTer needs Python 3.8 or newer (3.13 is recommended).\n"
+    _fatal("EasyTer needs Python 3.8 or newer.\n"
            "You are running Python %d.%d.%d.\n\n"
-           "Install Python 3.13 from https://python.org "
+           "Install a recent Python from https://python.org "
            "(tick \"Add python.exe to PATH\")." % sys.version_info[:3])
 
 _missing = []

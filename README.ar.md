@@ -50,15 +50,11 @@ vim…).
 ## المتطلّبات
 
 - **ويندوز ١٠ أو ١١** (تعتمد EasyTer على ConPTY الخاصّ بويندوز فقط).
-- **Python 3.13 (موصى).** ثبّته من [python.org](https://www.python.org/downloads/)
-  مع تفعيل خيار **"Add python.exe to PATH"** أثناء التثبيت (وهذا يثبّت أيضًا مُشغّل
-  `py` الذي يعتمد عليه `run.bat` و `EasyTer.vbs`).
-  - لماذا 3.13: إصدار `pywinpty` المستقرّ (2.x) لا يملك عجلةً (wheel) لـ Python 3.14،
-    فيجلب 3.14 إصدار `pywinpty` 3.x (إعادة كتابة) الذي **يجمّد** البرامج التفاعليّة
-    ملء الشاشة مثل Claude Code وvim. لذا تثبّت المُشغّلات `pyw -3.13`، ويثبّت
-    `requirements.txt` القيد `pywinpty<3`، للبقاء على الحزمة المختبَرة.
-- **حزم Python:** `PySide6` (≥ 6.5)، و`pywinpty` (2.x)، و`pyte`، و`wcwidth`.
+- **Python 3.10–3.14.** ثبّته من [python.org](https://www.python.org/downloads/)
+  مع تفعيل خيار **"Add python.exe to PATH"** أثناء التثبيت.
+- **حزم Python:** `PySide6` (≥ 6.5)، و`pywinpty` (≥ 3.0.5)، و`pyte`، و`wcwidth`.
   تُثبَّت تلقائيًّا عبر `install.bat` (أو `pip install -r requirements.txt`).
+  `pywinpty` 3.0.5 يملك عجلات (wheels) لـ Python 3.10–3.14، فلا حاجة لبناءٍ من المصدر.
 
 تفحص EasyTer هذه المتطلّبات عند الإقلاع: إن كان Python قديمًا أو حزمةٌ ناقصة، تعرض
 صندوق رسالةٍ يخبرك بالضبط بما عليك تثبيته، بدل أن تفشل بصمت.
