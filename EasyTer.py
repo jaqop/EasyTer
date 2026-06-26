@@ -1079,6 +1079,16 @@ class TerminalWidget(QWidget):
         self._repaint_timer.setSingleShot(True)
         self._repaint_timer.timeout.connect(self.update)
 
+        # "busy" detection for the tab indicator: a pane is busy while it is
+        # actively producing output (Claude thinking, a command streaming). OSC
+        # 133 can't tell us this for a full-screen TUI like Claude — the whole
+        # session is one long-running command — so we treat recent PTY output as
+        # busy and clear it after a short quiet gap.
+        self._busy = False
+        self._busy_timer = QTimer(self)
+        self._busy_timer.setSingleShot(True)
+        self._busy_timer.timeout.connect(lambda: self._set_busy(False))
+
         # cursor blink
         self._blink = True
         self._blink_timer = QTimer(self)
@@ -1194,12 +1204,27 @@ class TerminalWidget(QWidget):
         self._first_output = True
         if not self.copy_mode:
             self.scroll_offset = 0  # jump to the bottom when new output arrives
+        # output arrived → this pane is busy; the quiet timer clears it
+        self._busy_timer.start(700)
+        if not self._busy:
+            self._set_busy(True)
         # throttle: one paint every ~16ms no matter how fast bursts arrive (prevents slowdown)
         if not self._repaint_timer.isActive():
             self._repaint_timer.start(16)
 
+    def _set_busy(self, state):
+        """Update this pane's busy flag and tell the window to refresh its tab dot."""
+        if state == self._busy:
+            return
+        self._busy = state
+        win = self.window()
+        if win is not None and hasattr(win, "update_tab_busy"):
+            win.update_tab_busy(self)
+
     def _on_exit(self):
         self._exited = True
+        self._busy_timer.stop()
+        self._set_busy(False)
         self.update()
 
     def _on_cwd_changed(self, cwd):
@@ -3637,6 +3662,8 @@ class MainWindow(QWidget):
         self.tabs.setDocumentMode(True)
         self.tabs.tabCloseRequested.connect(self.close_tab)
         self.tabs.tabBarDoubleClicked.connect(self._rename_tab)
+        self._busy_icon = self._make_busy_icon()   # dot shown on background tabs that are working
+        self.tabs.currentChanged.connect(self._on_tab_changed)
         # corner buttons: + new tab - settings
         corner = QWidget()
         ch = QHBoxLayout(corner)
@@ -3693,16 +3720,27 @@ class MainWindow(QWidget):
         pal.setColor(self.backgroundRole(), QColor(bg))
         self.setPalette(pal)
         self.setAutoFillBackground(True)
+        # tab bar: make the ACTIVE (focused) tab unmistakable. Three cues stack so
+        # the focused tab pops even when every tab has the same name/icon:
+        #   1) background contrast - inactive tabs recede (dark, near the bar),
+        #      the active tab is clearly lighter/raised;
+        #   2) text brightness - active label full-bright, inactive muted gray;
+        #   3) a bold 3px accent bar on top of the active tab (transparent on the
+        #      others, reserved so switching tabs never shifts their height).
+        tab_inactive_bg = mix_hex(bg, fg, 0.04)   # recessed, near the chrome bar
+        tab_active_bg   = mix_hex(bg, fg, 0.18)    # raised, clearly lighter
+        tab_inactive_fg = mix_hex(bg, fg, 0.42)    # muted gray label
         qss = (
             # tab bar
             f"QTabWidget::pane{{border:0;background:{bg};}}"
             f"QTabBar{{background:{c['chrome']};}}"
-            f"QTabBar::tab{{background:{c['chrome2']};color:{c['dim']};"
+            f"QTabBar::tab{{background:{tab_inactive_bg};color:{tab_inactive_fg};"
             f"padding:6px 16px;border:1px solid {c['border']};border-bottom:0;"
+            f"border-top:3px solid transparent;"
             f"margin-right:2px;border-top-left-radius:6px;border-top-right-radius:6px;}}"
-            f"QTabBar::tab:selected{{background:{bg};color:{fg};"
-            f"border-bottom:2px solid {c['accent']};}}"
-            f"QTabBar::tab:hover{{background:{c['hover']};}}"
+            f"QTabBar::tab:selected{{background:{tab_active_bg};color:{fg};"
+            f"border-top:3px solid {c['accent']};}}"
+            f"QTabBar::tab:hover:!selected{{background:{c['hover']};color:{fg};}}"
             # pane split handles
             f"QSplitter::handle{{background:{c['border']};}}"
             f"QSplitter::handle:horizontal{{width:1px;}}"
@@ -3903,6 +3941,47 @@ class MainWindow(QWidget):
         edit.returnPressed.connect(edit.clearFocus)
         edit.editingFinished.connect(finish)
         edit.show()
+
+    def _make_busy_icon(self):
+        """A small filled dot in the 'running' color, shown on a tab while one of
+        its panes is actively producing output (Claude thinking, command running)."""
+        color = PALETTE.get("green") or PALETTE.get("yellow") or "#56d364"
+        pm = QPixmap(16, 16)
+        pm.fill(Qt.transparent)
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(color))
+        p.drawEllipse(4, 4, 8, 8)
+        p.end()
+        return QIcon(pm)
+
+    def update_tab_busy(self, pane):
+        """Refresh the busy dot on the tab owning *pane*."""
+        w = pane.parentWidget()
+        while w is not None and not isinstance(w, SessionWidget):
+            w = w.parentWidget()
+        if isinstance(w, SessionWidget):
+            self._apply_tab_busy(self.tabs.indexOf(w))
+
+    def _apply_tab_busy(self, idx):
+        """Set/clear the busy dot on tab *idx*. The focused tab never shows the dot
+        (you can already see it working) — it only flags background tabs that are
+        producing output."""
+        if idx < 0:
+            return
+        w = self.tabs.widget(idx)
+        if not isinstance(w, SessionWidget):
+            return
+        busy = (idx != self.tabs.currentIndex()
+                and any(getattr(t, "_busy", False) for t in w._all_terms()))
+        self.tabs.setTabIcon(idx, self._busy_icon if busy else QIcon())
+
+    def _on_tab_changed(self, _idx):
+        """When the active tab changes, re-evaluate every tab's dot: the newly
+        focused tab loses its dot and a still-working background tab regains one."""
+        for i in range(self.tabs.count()):
+            self._apply_tab_busy(i)
 
     def set_dynamic_tab_title(self, pane, title):
         """Update a tab's title from the pane's working directory, unless the
