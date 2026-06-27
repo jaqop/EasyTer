@@ -10,6 +10,17 @@ tabs, split panes, themes, search, an embedded editor, and a Python plugin API.
 
 [العربية](README.ar.md)
 
+## Screenshots
+
+Connected, shaped Arabic in a real terminal session — correct letter joining,
+diacritics, bidirectional layout, and Arabic-Indic numbers in the right order:
+
+![EasyTer rendering connected Arabic in the terminal](docs/screenshot-arabic.png)
+
+The same correct Arabic in the built-in editor (syntax highlighting + line numbers):
+
+![EasyTer's embedded editor showing connected Arabic](docs/screenshot-editor.png)
+
 ## Why
 
 Mainstream Windows terminals (Windows Terminal, and GPU terminals like kitty and
