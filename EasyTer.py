@@ -22,6 +22,7 @@ import subprocess
 import sys
 import threading
 import time
+import unicodedata
 import webbrowser
 
 # Under pythonw.exe there is no console, so sys.stdout/sys.stderr are None. A stray
@@ -514,6 +515,20 @@ def _is_arabic_letter(ch):
            (0xFB50 <= o <= 0xFDFF) or (0xFE70 <= o <= 0xFEFF)
 
 
+def _rev_clusters(s):
+    """Reverse character order while keeping each base character together with
+    its following combining marks (Arabic diacritics: shadda, tanwin, …). A plain
+    s[::-1] would put marks before their base and break shaping/joining."""
+    units = []
+    for ch in s:
+        if units and unicodedata.combining(ch):
+            units[-1] += ch
+        else:
+            units.append(ch)
+    units.reverse()
+    return "".join(units)
+
+
 def line_is_rtl_visual(text):
     """Is the line predominantly Arabic (so Claude reversed it)?"""
     ar = lt = 0
@@ -532,7 +547,7 @@ def unbidi_rtl_line(line):
     """Reverse L2 for an RTL-base line: reverse the whole line then re-reverse LTR islands. Punctuation
     is joined to the island only if a Latin letter follows it (so it stays inside config.txt but leaves
     the end of a number like "01." so it does not flip to ".01")."""
-    rev = line[::-1]
+    rev = _rev_clusters(line)
     out = []
     i, n = 0, len(rev)
     while i < n:
@@ -548,7 +563,7 @@ def unbidi_rtl_line(line):
                     j += 1
                 else:
                     break
-            out.append(rev[i:j][::-1])
+            out.append(_rev_clusters(rev[i:j]))
             i = j
         else:
             out.append(rev[i])
@@ -571,7 +586,7 @@ def reverse_arabic_runs(line):
             while j < n and (_is_arabic_letter(line[j]) or
                              (line[j] == ' ' and j + 1 < n and _is_arabic_letter(line[j + 1]))):
                 j += 1
-            out.append(line[i:j][::-1])
+            out.append(_rev_clusters(line[i:j]))
             i = j
         else:
             out.append(line[i])
@@ -1622,9 +1637,9 @@ class TerminalWidget(QWidget):
                 j += 1
             col_start = cells[i][0]
             col_end = cells[j - 1][0] + cells[j - 1][3]
-            text = "".join(chars)
-            if is_ar:
-                text = text[::-1]   # Claude visual -> logical for shaping
+            # reverse the cell ORDER (each cell already holds a base char plus its
+            # combining marks), not the code points, so diacritics stay attached
+            text = "".join(reversed(chars)) if is_ar else "".join(chars)
             self._draw_run(p, col_start * self.cw, y,
                            (col_end - col_start) * self.cw, text, st0, is_ar)
             i = j
