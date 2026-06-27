@@ -503,6 +503,16 @@ def _is_inner_ltr(ch):
     return ch in "._-/:\\@~+=#&%" or _is_ltr_char(ch)
 
 
+def _arabic_after_spaces(cells, k, n):
+    """Forward from cell k, skipping ONLY spaces: True if the next non-space cell is an
+    Arabic letter. Used to decide whether interior spaces belong inside an Arabic phrase
+    (so multi-space gaps between Arabic words are shaped as one run). Stops at any other
+    character - including box-drawing table borders - so structure is never swallowed."""
+    while k < n and cells[k][1] == " ":
+        k += 1
+    return k < n and _is_arabic_letter(cells[k][1])
+
+
 def _is_arabic_letter(ch):
     if not ch:
         return False
@@ -1609,9 +1619,12 @@ class TerminalWidget(QWidget):
 
     # ===== grid engine (Claude mode) =====
     def _draw_row_grid(self, p, yi, row, ncols):
-        """Draws the line run by run, pinned to the cell grid: each item stays in
-        its visual cell (as Claude placed it) so alignment does not shift; Arabic runs are reversed
-        to logical and shaped within their cells so letters join. Combines both benefits."""
+        """Draws the line pinned to the cell grid: each item stays in its visual cell
+        (as Claude placed it) so alignment does not shift. Runs are grouped by script
+        ONLY (not by colour) so an Arabic WORD is shaped as a single layout and its
+        letters join even when a diff/highlight changes colour mid-word. Per-cell colours
+        are applied with FormatRanges inside the run, and cell backgrounds are painted
+        first, pinned to the grid, so highlight blocks stay rectangular."""
         y = yi * self.ch
         # collect cells in visual order with their columns (skipping wide continuation cells)
         cells = []
@@ -1624,36 +1637,61 @@ class TerminalWidget(QWidget):
             c += 2 if wide else 1
         if not any(d.strip() for (_, d, _, _) in cells):
             return
-        # group consecutive cells into runs by (is-Arabic?, style)
+        # 1) paint cell backgrounds first, pinned to the grid (highlight blocks stay aligned)
+        for (col, d, st, w) in cells:
+            fg = resolve_color(st[0], False)
+            bg = resolve_color(st[1], True)
+            if st[3]:
+                fg, bg = bg, fg
+            if bg.rgb() != BASE_BG.rgb():
+                p.fillRect(QRect(col * self.cw, y, w * self.cw, self.ch), bg)
+        # 2) group consecutive cells into runs by script (is-Arabic?), ignoring colour.
+        #    An Arabic run absorbs INTERIOR neutral cells (spaces, Arabic punctuation)
+        #    when another Arabic cell follows, so the whole phrase is shaped as one unit
+        #    and HarfBuzz lays out natural inter-word spacing (instead of each word being
+        #    right-aligned alone in its box, which collapses the gaps between words).
         n = len(cells)
         i = 0
         while i < n:
-            st0 = cells[i][2]
             is_ar = _is_arabic_letter(cells[i][1])
-            chars = []
             j = i
-            while j < n and _is_arabic_letter(cells[j][1]) == is_ar and cells[j][2] == st0:
-                chars.append(cells[j][1])
-                j += 1
-            col_start = cells[i][0]
-            col_end = cells[j - 1][0] + cells[j - 1][3]
-            # reverse the cell ORDER (each cell already holds a base char plus its
-            # combining marks), not the code points, so diacritics stay attached
-            text = "".join(reversed(chars)) if is_ar else "".join(chars)
+            if is_ar:
+                while j < n:
+                    if _is_arabic_letter(cells[j][1]):
+                        j += 1
+                    elif (cells[j][1] == " "
+                          and _arabic_after_spaces(cells, j + 1, n)):
+                        j += 1          # interior space(s) between Arabic words
+                    else:
+                        break
+            else:
+                while j < n and not _is_arabic_letter(cells[j][1]):
+                    j += 1
+            seg = cells[i:j]
+            col_start = seg[0][0]
+            col_end = seg[-1][0] + seg[-1][3]
             self._draw_run(p, col_start * self.cw, y,
-                           (col_end - col_start) * self.cw, text, st0, is_ar)
+                           (col_end - col_start) * self.cw, seg, is_ar)
             i = j
 
-    def _draw_run(self, p, x0, y, boxw, text, style, is_ar):
-        fg = resolve_color(style[0], False)
-        bg = resolve_color(style[1], True)
-        if style[3]:
-            fg, bg = bg, fg
-        if bg.rgb() != BASE_BG.rgb():
-            p.fillRect(QRect(int(x0), y, int(boxw), self.ch), bg)
+    def _draw_run(self, p, x0, y, boxw, seg, is_ar):
+        """seg: list of (col, cellstring, style, width) in VISUAL order. Backgrounds are
+        already painted by the caller; this shapes the whole run as one layout (so Arabic
+        joins) and colours each cell's glyphs with a FormatRange."""
+        # logical order: reverse the cell ORDER for Arabic (each cell holds a base char plus
+        # its combining marks, so reversing cells - not code points - keeps diacritics attached)
+        ordered = list(reversed(seg)) if is_ar else seg
+        parts = []
+        spans = []          # (start, length, style) per cell, in text positions
+        pos = 0
+        for (col, d, st, w) in ordered:
+            parts.append(d)
+            spans.append((pos, len(d), st))
+            pos += len(d)
+        text = "".join(parts)
         if not text.strip():
             return
-        key = (text, style, is_ar)
+        key = (text, tuple(spans), is_ar)
         cached = self._run_cache.get(key)
         if cached is None:
             layout = QTextLayout(text, self.font)
@@ -1661,15 +1699,22 @@ class TerminalWidget(QWidget):
             opt.setWrapMode(QTextOption.NoWrap)
             opt.setTextDirection(Qt.RightToLeft if is_ar else Qt.LeftToRight)
             layout.setTextOption(opt)
-            fmt = QTextCharFormat()
-            fmt.setForeground(fg)
-            if style[2]:
-                fmt.setFontWeight(QFont.Bold)
-            fr = QTextLayout.FormatRange()
-            fr.start = 0
-            fr.length = len(text)
-            fr.format = fmt
-            layout.setFormats([fr])
+            frs = []
+            for (start, length, st) in spans:
+                fg = resolve_color(st[0], False)
+                bg = resolve_color(st[1], True)
+                if st[3]:
+                    fg, bg = bg, fg
+                fmt = QTextCharFormat()
+                fmt.setForeground(fg)
+                if st[2]:
+                    fmt.setFontWeight(QFont.Bold)
+                fr = QTextLayout.FormatRange()
+                fr.start = start
+                fr.length = length
+                fr.format = fmt
+                frs.append(fr)
+            layout.setFormats(frs)
             layout.beginLayout()
             line = layout.createLine()
             line.setLineWidth(100000)
@@ -1681,10 +1726,19 @@ class TerminalWidget(QWidget):
             self._run_cache[key] = cached
         layout, line = cached
         natw = line.naturalTextWidth()
-        # Arabic (RTL) is right-aligned in its box; others left
-        dx = (x0 + boxw - natw) if is_ar else x0
-        p.setPen(fg)
-        layout.draw(p, QPointF(dx, y + self._text_dy))
+        if is_ar and natw > boxw + 0.5:
+            # Arabic glyphs are wider than the Latin "M" cell, so a phrase shapes wider
+            # than its N cells and would spill left into the neighbouring run (overlap).
+            # Compress it horizontally to fit its grid box (monospace-Arabic fit).
+            p.save()
+            p.translate(x0, 0.0)
+            p.scale(boxw / natw, 1.0)
+            layout.draw(p, QPointF(0.0, y + self._text_dy))
+            p.restore()
+        else:
+            # Arabic (RTL) is right-aligned in its box; others left
+            dx = (x0 + boxw - natw) if is_ar else x0
+            layout.draw(p, QPointF(dx, y + self._text_dy))
 
     # ---------- input ----------
     def keyPressEvent(self, event: QKeyEvent):
