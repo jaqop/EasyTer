@@ -1549,6 +1549,35 @@ class TerminalWidget(QWidget):
             out.append(screen.buffer[y])
         return out
 
+    @staticmethod
+    def _abs_line(screen, idx):
+        """One line by absolute index (history then live), without copying history."""
+        htop = screen.history.top
+        hlen = len(htop)
+        if idx < 0 or idx >= hlen + screen.lines:
+            return None
+        if idx < hlen:
+            return htop[idx]          # deque indexing is O(distance from nearest end)
+        return screen.buffer[idx - hlen]
+
+    @staticmethod
+    def _line_window(screen, start, count):
+        """The `count` lines starting at absolute `start`, across history+live.
+
+        Only touches the lines actually needed instead of materializing the whole
+        scrollback every frame: when not scrolled up the window is entirely in the
+        live buffer and history is never walked."""
+        htop = screen.history.top
+        hlen = len(htop)
+        total = hlen + screen.lines
+        end = min(total, start + count)
+        out = []
+        if start < hlen:
+            out.extend(itertools.islice(htop, start, min(end, hlen)))
+        for y in range(max(start, hlen) - hlen, max(0, end - hlen)):
+            out.append(screen.buffer[y])
+        return out
+
     def _paint(self, p):
         p.fillRect(self.rect(), BASE_BG)
         # optional background image: drawn over the base fill at the chosen
