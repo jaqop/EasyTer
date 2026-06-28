@@ -14,12 +14,14 @@ Run with:  pythonw EasyTer.py   (or EasyTer.vbs / run.bat)
 import ctypes
 import ctypes.wintypes
 import glob
+import itertools
 import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import unicodedata
@@ -867,6 +869,7 @@ class PtyBackend(QObject):
     def __init__(self, cols, rows, command="powershell.exe", start_cwd=None):
         super().__init__()
         self.lock = threading.Lock()
+        self._write_lock = threading.Lock()   # serialize writes from the UI and the pyte auto-reply
         hist = max(1000, int(SETTINGS.get("scrollback", 10000)))
         self.screen = ReportingScreen(cols, rows, history=hist, ratio=0.5)
         self.stream = pyte.Stream(self.screen)
@@ -922,7 +925,21 @@ class PtyBackend(QObject):
         start_dir = start_cwd or SETTINGS.get("start_dir") or os.path.expanduser("~")
         if not (isinstance(start_dir, str) and os.path.isdir(start_dir)):
             start_dir = os.path.expanduser("~")
-        self.proc = PtyProcess.spawn(spec, dimensions=(rows, cols), env=env, cwd=start_dir)
+        # Spawning can fail (a saved session points at an uninstalled shell — WSL
+        # removed, a renamed Git Bash path, a bad command). Under pythonw stderr is
+        # swallowed, so an uncaught error here means the window never appears. Keep
+        # it non-fatal: show the failure in the pane and let the rest of EasyTer run.
+        try:
+            self.proc = PtyProcess.spawn(spec, dimensions=(rows, cols), env=env, cwd=start_dir)
+        except Exception as ex:
+            self.proc = None
+            self._alive = False
+            shown = " ".join(spec) if isinstance(spec, list) else str(spec)
+            with self.lock:
+                self.stream.feed(
+                    "\r\n  \x1b[31mEasyTer: couldn't start this shell.\x1b[0m\r\n"
+                    "  %s\r\n  Command: %s\r\n" % (ex, shown))
+            return
         # let pyte answer cursor-position / device-attribute queries (see ReportingScreen):
         # programs like Claude Code block on the reply, so route it back to the child.
         self.screen.pty_writer = lambda d: self.write(d)
@@ -933,6 +950,15 @@ class PtyBackend(QObject):
             while self._alive:
                 data = self.proc.read(65536)   # bigger reads = fewer feed cycles on huge output
                 if not data:
+                    # Some pywinpty builds return "" instead of raising EOFError once
+                    # the child exits; spinning on that would peg a core. Stop if the
+                    # process is gone, otherwise back off briefly before retrying.
+                    try:
+                        if not self.proc.isalive():
+                            break
+                    except Exception:
+                        break
+                    time.sleep(0.005)
                     continue
                 self._scan_alt(data)                 # detect the alternate screen (on the raw data)
                 self._scan_cwd(data)                 # track the working directory
@@ -1096,8 +1122,13 @@ class PtyBackend(QObject):
                         if cmd and cmd != self.running_cmd:
                             self.running_cmd = cmd
                             cmd_dirty = True
+        if self.proc is None:
+            return
         try:
-            self.proc.write(text)
+            # serialize against the reader thread's DSR/DA auto-replies so two
+            # concurrent WriteFiles to the ConPTY handle can't interleave bytes
+            with self._write_lock:
+                self.proc.write(text)
         except Exception:
             pass
         if cmd_dirty:
@@ -1220,9 +1251,10 @@ class TerminalWidget(QWidget):
     def restart_with(self, command):
         """Closes the current shell and restarts the pane with a new shell (resetting state)."""
         try:
-            self.backend.data_ready.disconnect(self._on_data)
-            self.backend.exited.disconnect(self._on_exit)
-            self.backend.alt_screen_changed.disconnect(self._on_alt_screen)
+            # drop every signal (cwd/title, clipboard, command-ended too — not just
+            # the three below) so the dying shell's reader thread can't fire a slot
+            # against a pane that has already moved on to a new backend
+            self.backend.disconnect()
         except Exception:
             pass
         self.backend.close()
@@ -1413,6 +1445,35 @@ class TerminalWidget(QWidget):
         finally:
             p.end()
 
+    @staticmethod
+    def _abs_line(screen, idx):
+        """One line by absolute index (history then live), without copying history."""
+        htop = screen.history.top
+        hlen = len(htop)
+        if idx < 0 or idx >= hlen + screen.lines:
+            return None
+        if idx < hlen:
+            return htop[idx]          # deque indexing is O(distance from nearest end)
+        return screen.buffer[idx - hlen]
+
+    @staticmethod
+    def _line_window(screen, start, count):
+        """The `count` lines starting at absolute `start`, across history+live.
+
+        Only touches the lines actually needed instead of materializing the whole
+        scrollback every frame: when not scrolled up the window is entirely in the
+        live buffer and history is never walked."""
+        htop = screen.history.top
+        hlen = len(htop)
+        total = hlen + screen.lines
+        end = min(total, start + count)
+        out = []
+        if start < hlen:
+            out.extend(itertools.islice(htop, start, min(end, hlen)))
+        for y in range(max(start, hlen) - hlen, max(0, end - hlen)):
+            out.append(screen.buffer[y])
+        return out
+
     def _paint(self, p):
         p.fillRect(self.rect(), BASE_BG)
         # optional background image: drawn over the base fill at the chosen
@@ -1430,13 +1491,10 @@ class TerminalWidget(QWidget):
 
         with self.backend.lock:
             screen = self.backend.screen
-            history = list(screen.history.top)
-            live = [screen.buffer[y] for y in range(screen.lines)]
-            all_lines = history + live
-            total = len(all_lines)
+            total = len(screen.history.top) + screen.lines
             start = max(0, total - self.rows - self.scroll_offset)
             self._paint_start = start
-            visible = all_lines[start:start + self.rows]
+            visible = self._line_window(screen, start, self.rows)
             cur_x, cur_y = screen.cursor.x, screen.cursor.y
             cur_hidden = screen.cursor.hidden
             ncols = screen.columns
@@ -2002,10 +2060,9 @@ class TerminalWidget(QWidget):
         abs_line, col = self._pos_to_cell(pos)
         with self.backend.lock:
             screen = self.backend.screen
-            all_lines = list(screen.history.top) + [screen.buffer[y] for y in range(screen.lines)]
-            if abs_line < 0 or abs_line >= len(all_lines):
+            row = self._abs_line(screen, abs_line)
+            if row is None:
                 return None
-            row = all_lines[abs_line]
             ncols = screen.columns
             text = "".join((row[c].data if row[c].data else " ") for c in range(ncols))
         for m in URL_RE.finditer(text):
@@ -2057,15 +2114,13 @@ class TerminalWidget(QWidget):
         (lo_l, lo_c), (hi_l, hi_c) = sel
         with self.backend.lock:
             screen = self.backend.screen
-            history = list(screen.history.top)
-            live = [screen.buffer[y] for y in range(screen.lines)]
-            all_lines = history + live
+            total = len(screen.history.top) + screen.lines
             ncols = screen.columns
             out = []
             for L in range(lo_l, hi_l + 1):
-                if L < 0 or L >= len(all_lines):
+                if L < 0 or L >= total:
                     continue
-                row = all_lines[L]
+                row = self._abs_line(screen, L)
                 if self.claude_mode:
                     # in Claude mode we copy the whole line logically (reversal can't be split by columns)
                     full = self._full_row_text(row, ncols)
@@ -2351,6 +2406,9 @@ class TerminalWidget(QWidget):
                 return
         body = txt.replace("\r\n", "\r").replace("\n", "\r")
         if self.backend.bracketed_paste:
+            # strip any embedded end-marker so pasted content can't terminate paste
+            # mode early and smuggle the remainder in as executed input
+            body = body.replace("\x1b[201~", "")
             self.backend.write("\x1b[200~" + body + "\x1b[201~")
         else:
             self.backend.write(body)
@@ -3501,8 +3559,21 @@ class EditorWidget(QWidget):
         if not self.path:
             return self.save_as()
         try:
-            with open(self.path, "w", encoding="utf-8") as fh:
-                fh.write(self.edit.toPlainText())
+            # write to a sibling temp file then atomically replace, so a failed or
+            # interrupted write (disk full, dropped network drive) can't destroy the
+            # original file the way truncating it with open(..., "w") would
+            d = os.path.dirname(os.path.abspath(self.path)) or "."
+            fd, tmp = tempfile.mkstemp(dir=d, prefix=".easyter-", suffix=".tmp")
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    fh.write(self.edit.toPlainText())
+                os.replace(tmp, self.path)
+            except Exception:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+                raise
             self.edit.document().setModified(False)
             self._update_header()
         except Exception as ex:
