@@ -581,6 +581,40 @@ def unbidi_rtl_line(line):
     return "".join(out)
 
 
+def cmd_is_claude(running_cmd):
+    """True if the command that entered the alternate screen is Claude itself.
+
+    Claude pre-reverses Arabic on Windows, so its output needs the visual->logical
+    grid engine. Other full-screen tools (less, git's pager, vim, man, htop, ...)
+    also use the alternate screen but emit Arabic in LOGICAL order and rely on the
+    terminal's native bidi - reversing those mangles the text. We match the INVOKED
+    PROGRAM (the first token, basename + extension stripped), with an allowance for
+    runners like `npx`, so `claude`, `npx claude` and `C:\\...\\claude.exe` match,
+    but `vim claude.py`, `less claude.txt` and `git log claude` do not (the program
+    there is vim/less/git, and `claude` is just a file/branch argument)."""
+    if not running_cmd:
+        return False
+
+    def _prog(tok):
+        base = os.path.basename(tok.strip("\"'")).lower()
+        for ext in (".exe", ".cmd", ".bat", ".ps1"):
+            if base.endswith(ext):
+                return base[: -len(ext)]
+        return base
+
+    toks = running_cmd.split()
+    if not toks:
+        return False
+    first = _prog(toks[0])
+    if first == "claude":
+        return True
+    # a runner launching claude (npx claude, uvx claude, ...)
+    runners = {"&", "npx", "npm", "pnpm", "bun", "node", "py", "python", "python3", "uv", "uvx"}
+    if first in runners and any(_prog(t) == "claude" for t in toks[1:]):
+        return True
+    return False
+
+
 def _has_arabic(text):
     return any(_is_arabic_letter(c) for c in text)
 
@@ -2331,13 +2365,16 @@ class TerminalWidget(QWidget):
         w.setWindowTitle(base + tag)
 
     def _on_alt_screen(self, active):
-        """Enable/disable Claude mode automatically as a full-screen TUI program enters/leaves."""
+        """Enable/disable Claude mode automatically as a full-screen TUI program enters/leaves.
+        Only Claude needs the grid engine (it pre-reverses Arabic); pagers/editors like
+        git's less, vim, man and htop also use the alternate screen but emit LOGICAL-order
+        Arabic, so they stay on the normal path where Qt does native bidi (F2 forces grid)."""
         if self.auto_follow:
-            self.claude_mode = active
+            self.claude_mode = active and cmd_is_claude(self.backend.running_cmd)
             self._set_title()
             self.update()
             self._notify_status()
-        if active:
+        if active and cmd_is_claude(self.backend.running_cmd):
             PLUGINS.emit("claude_detected", self)
 
     def toggle_claude_mode(self):
@@ -2347,7 +2384,7 @@ class TerminalWidget(QWidget):
             self.claude_mode = not self.claude_mode
         else:
             self.auto_follow = True
-            self.claude_mode = self.backend.alt_screen
+            self.claude_mode = self.backend.alt_screen and cmd_is_claude(self.backend.running_cmd)
         self._set_title()
         self.update()
         self._notify_status()
