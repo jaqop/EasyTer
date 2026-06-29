@@ -58,7 +58,11 @@ WSL, Claude Code, vim, …).
   segments (see `examples/init.py`).
 - **Shell auto-detect** (PowerShell, cmd, Git Bash, WSL), **session save/restore**,
   configurable scrollback, fast throttled rendering.
-- **Claude mode** — automatic BiDi handling for Claude Code's full-screen UI.
+- **Claude mode** — automatic BiDi handling for Claude Code's full-screen UI. It
+  auto-enables **only when Claude itself is running**, so other alternate-screen
+  programs (`git diff` in `less`, `vim`, `man`, `htop`) keep correct native BiDi
+  instead of being reshaped — which previously shredded their Arabic. `F2` still
+  toggles it manually for any tool that pre-reverses Arabic.
 - Bilingual UI: **English (default)** and Arabic. Local-first, **no telemetry**.
 
 ## Requirements
