@@ -83,14 +83,6 @@ def _fatal(msg):
     sys.exit(1)
 
 
-def _warn(msg):
-    """Show a native Windows warning box (no deps) but keep running."""
-    try:
-        ctypes.windll.user32.MessageBoxW(0, msg, "EasyTer", 0x30)  # MB_ICONWARNING
-    except Exception:
-        pass
-
-
 if sys.version_info < (3, 8):
     _fatal("EasyTer needs Python 3.8 or newer.\n"
            "You are running Python %d.%d.%d.\n\n"
@@ -114,41 +106,6 @@ if _missing:
 import pyte
 from winpty import PtyProcess
 from wcwidth import wcwidth as _wcwidth_raw
-
-
-# --- Slow / freezing TUI guard --------------------------------------------
-# pywinpty 3.x is a from-scratch rewrite that freezes full-screen TUIs (Claude
-# Code, vim, ...) and makes the whole terminal feel sluggish. It only gets
-# pulled in on Python 3.14+, where the stable 2.x line has no wheel. The version
-# check above accepts 3.8+, so a user on 3.14 sails past it and just ends up with
-# a silently slow terminal. Detect the bad combo and tell them exactly how to get
-# back onto the tested 3.13 / pywinpty-2.x stack — then keep running anyway.
-def _pywinpty_major():
-    try:
-        import importlib.metadata as _md
-        return int(_md.version("pywinpty").split(".")[0])
-    except Exception:
-        return None
-
-_pp_major = _pywinpty_major()
-if _pp_major is not None and _pp_major >= 3:
-    _warn("EasyTer detected pywinpty %d.x.\n\n"
-          "That version freezes interactive programs (Claude Code, vim, ...) and\n"
-          "makes the terminal feel slow. It is pulled in by Python 3.14+.\n\n"
-          "To get the fast, tested setup back:\n"
-          "  1. Install Python 3.13 (tick \"Add python.exe to PATH\").\n"
-          "  2. Re-run install.bat, or in the project folder:\n"
-          "         pip install \"pywinpty<3\"\n\n"
-          "EasyTer will keep running, but TUIs may stay sluggish until then."
-          % _pp_major)
-elif sys.version_info[:2] >= (3, 14):
-    _warn("EasyTer is running on Python %d.%d, newer than the tested Python 3.13.\n\n"
-          "On 3.14+ the stable pywinpty 2.x line has no wheel, so the terminal can\n"
-          "freeze on TUIs (Claude Code, vim, ...) or feel slow.\n\n"
-          "For the smoothest experience, install Python 3.13 and re-run install.bat.\n\n"
-          "EasyTer will keep running."
-          % sys.version_info[:2])
-# --------------------------------------------------------------------------
 
 
 def _char_width(d):
