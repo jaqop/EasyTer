@@ -650,6 +650,22 @@ def restore_bidi_line(text):
     return None
 
 
+# Optional native acceleration. The pure-Python helpers above are the source of
+# truth and the always-available fallback. If bidi_fast is importable - and especially
+# if its Cython extension (bidi_fast.*.pyd) has been built via `python setup_accel.py
+# build_ext --inplace` - its identical-but-faster versions override the ones above
+# (~2.5x on the per-character BiDi/run-detection work). Building is OPTIONAL; when the
+# module or extension is absent this falls through silently to the pure versions.
+try:
+    from bidi_fast import (                      # noqa: F811  (intentional override)
+        _is_ltr_char, _is_arabic_letter, _arabic_after_spaces, _rev_clusters,
+        line_is_rtl_visual, unbidi_rtl_line, _has_arabic, reverse_arabic_runs,
+        restore_bidi_line,
+    )
+except Exception:
+    pass
+
+
 # ════════════════════════════════════════════════════════════════════════
 #  Plugin system (Python): ~/.easyter/init.py is loaded at startup and gives
 #  the power user an API: keybindings, commands, themes, event hooks, status segments.

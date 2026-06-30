@@ -3,6 +3,16 @@ __pycache__/
 *.pyc
 *.pyo
 
+# Native acceleration build artifacts (optional Cython extension; build locally
+# with `python setup_accel.py build_ext --inplace`). Source stays; outputs don't.
+build/
+bidi_fast.c
+*.pyd
+*.obj
+*.exp
+*.lib
+*.so
+
 # EasyTer runtime / per-machine state (defaults ship in code)
 easyter_config.json
 easyter_session.json
