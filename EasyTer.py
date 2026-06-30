@@ -4022,11 +4022,20 @@ class MainWindow(QWidget):
         self.resize(1180, 720)
         self.setMinimumSize(520, 320)
         self._style_window()
+        # Defer opening the first tab to the first event-loop turn (just after show()).
+        # Building a terminal realizes the full Arabic font fallback chain, which on
+        # Windows/DirectWrite costs ~250-480ms the first time it is used. Doing that
+        # before show() left the window invisible for that whole time; a 0ms timer lets
+        # the window paint immediately and the terminal fill in a moment later.
+        QTimer.singleShot(0, lambda: self._open_initial_tab(start_dir))
+
+    def _open_initial_tab(self, start_dir):
         # launched with a folder ("Open EasyTer here"): open one fresh tab there
         if start_dir and os.path.isdir(start_dir):
             self.new_tab(start_cwd=start_dir)
         elif not self.restore_session():
             self.new_tab()
+        _prof("first tab ready")
 
     def _style_window(self):
         c = ui_theme_colors()                 # all UI colors derived from the theme
