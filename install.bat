@@ -11,6 +11,25 @@ echo   This copy of EasyTer is located at:
 echo       %HERE%
 echo.
 
+REM Check Python is actually installed and on PATH before anything else.
+python --version >nul 2>&1
+if errorlevel 1 (
+  echo   [!] Python was not found on PATH.
+  echo.
+  echo       EasyTer needs Python 3.10-3.14. Install it from:
+  echo           https://www.python.org/downloads/
+  echo       During setup, tick "Add python.exe to PATH", then close and
+  echo       reopen this terminal ^(or re-run install.bat^) and try again.
+  echo.
+  echo       Tip: if typing "python" opens the Microsoft Store, that's a
+  echo       Windows shortcut stub, not real Python - install from the link
+  echo       above instead. You can also turn the stub off under
+  echo       Settings ^> Apps ^> Advanced app settings ^> App execution aliases.
+  echo.
+  pause
+  exit /b 1
+)
+
 REM Warn if this looks like a system / temporary folder.
 echo "%HERE%" | findstr /I /C:"\system32\" /C:"\Windows\" /C:"\Temp\" /C:"\Downloads\" /C:"\Program Files" >nul
 if not errorlevel 1 (

@@ -67,12 +67,25 @@ WSL, Claude Code, vim, …).
 
 ## Requirements
 
-- **Windows 10 or 11** (EasyTer uses ConPTY, which is Windows-only).
-- **Python 3.10–3.14.** Install it from [python.org](https://www.python.org/downloads/)
-  and tick **"Add python.exe to PATH"** during setup.
+New to Windows dev tools? You need these two before anything else works:
+
+| Requirement | Download link | Needed for |
+|---|---|---|
+| **Windows 10 or 11** | — (EasyTer uses ConPTY, which is Windows-only) | running EasyTer |
+| **Python 3.10–3.14** | [python.org/downloads](https://www.python.org/downloads/) | running `install.bat` / EasyTer itself |
+| **Git** (optional) | [git-scm.com/downloads](https://git-scm.com/downloads) | only if you clone instead of using Download ZIP |
+
+- On the Python installer's first screen, **tick "Add python.exe to PATH"**
+  before clicking Install — this is the #1 cause of "python is not
+  recognized" errors. After installing, **close and reopen your
+  terminal/PowerShell** so it picks up the new PATH.
+- If typing `python --version` opens the Microsoft Store instead of printing
+  a version, that's a Windows shortcut stub, not real Python — install from
+  the link above instead (this is normal on a fresh Windows install).
 - **Python packages:** `PySide6` (≥ 6.5), `pywinpty` (≥ 3.0.5), `pyte`, `wcwidth`.
-  These are installed for you by `install.bat` (or `pip install -r requirements.txt`).
-  `pywinpty` 3.0.5 ships wheels for Python 3.10–3.14, so no source build is needed.
+  These are installed for you by `install.bat` (or `pip install -r requirements.txt`)
+  — you don't need to install them yourself. `pywinpty` 3.0.5 ships wheels for
+  Python 3.10–3.14, so no source build is needed.
 
 EasyTer checks these on startup: if Python is too old or a package is missing, it
 shows a message box telling you exactly what to install instead of failing silently.
@@ -81,10 +94,12 @@ shows a message box telling you exactly what to install instead of failing silen
 
 Get the source onto your computer first, then follow **Install** below.
 
-- **No Git:** click the green **`<> Code`** button at the top of this page →
-  **Download ZIP**, then right-click the downloaded ZIP → **Extract All...**
-  (don't run anything from inside the ZIP without extracting it first).
-- **With Git:**
+- **No Git (recommended for most people):** click the green **`<> Code`**
+  button at the top of this page → **Download ZIP**, then right-click the
+  downloaded ZIP → **Extract All...** (don't run anything from inside the ZIP
+  without extracting it first).
+- **With Git** — install [Git for Windows](https://git-scm.com/downloads) first,
+  then from PowerShell or Git Bash:
   ```sh
   git clone https://github.com/jaqop/EasyTer.git
   ```
