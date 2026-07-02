@@ -218,8 +218,13 @@ def available_shells():
     if shutil.which("pwsh"):
         shells.append(("PowerShell 7", "pwsh.exe"))
     shells.append(("Command Prompt", "cmd.exe"))
-    for p in (r"C:\Program Files\Git\bin\bash.exe",
-              r"C:\Program Files\Git\usr\bin\bash.exe"):
+    # Prefer the REAL shell in usr\bin: bin\bash.exe is only a launcher stub that
+    # re-execs bash in a way that detaches from the ConPTY pipe, so no prompt shows
+    # and no input reaches it ("can't type at all"). usr\bin\bash.exe is interactive.
+    for p in (r"C:\Program Files\Git\usr\bin\bash.exe",
+              r"C:\Program Files (x86)\Git\usr\bin\bash.exe",
+              r"C:\Program Files\Git\bin\bash.exe",          # launcher stub — last resort
+              r"C:\Program Files (x86)\Git\bin\bash.exe"):
         if os.path.exists(p):
             shells.append(("Git Bash", p))
             break
@@ -1347,13 +1352,19 @@ class TerminalWidget(QWidget):
 
     def restart_with(self, command):
         """Closes the current shell and restarts the pane with a new shell (resetting state)."""
-        try:
-            # drop every signal (cwd/title, clipboard, command-ended too — not just
-            # the three below) so the dying shell's reader thread can't fire a slot
-            # against a pane that has already moved on to a new backend
-            self.backend.disconnect()
-        except Exception:
-            pass
+        # drop every signal (cwd/title, clipboard, command-ended too) so the dying
+        # shell's reader thread can't fire a slot against a pane that has already
+        # moved on to a new backend. NOTE: QObject.disconnect() with no args raises
+        # TypeError in PySide6 (was a silent no-op swallowed below), which left the
+        # old backend's `exited` connected — after a shell switch it fired _on_exit
+        # and set _exited=True, killing input until the tab was reopened. Disconnect
+        # each signal explicitly (per-signal .disconnect() drops all its receivers).
+        for _sig in ("data_ready", "exited", "alt_screen_changed", "command_ended",
+                     "clipboard_set", "cwd_changed", "cmd_changed", "edit_file"):
+            try:
+                getattr(self.backend, _sig).disconnect()
+            except Exception:
+                pass
         self.backend.close()
         self.scroll_offset = 0
         self.sel_anchor = self.sel_point = None
@@ -1477,6 +1488,12 @@ class TerminalWidget(QWidget):
             win.update_tab_busy(self)
 
     def _on_exit(self):
+        # ignore a stale 'exited' from a previous backend (shell switch): only the
+        # pane's current backend may mark it exited. Guards the tiny window where an
+        # old reader thread emits after restart — else input dies and the tab must
+        # be reopened.
+        if self.sender() is not None and self.sender() is not self.backend:
+            return
         self._exited = True
         self._busy_timer.stop()
         self._set_busy(False)
