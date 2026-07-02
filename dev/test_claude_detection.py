@@ -13,7 +13,9 @@ pager case can never silently regress.
 
 Run:  python -m unittest test_claude_detection
 """
-import unittest
+import os, sys, unittest
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # repo root (parent of dev/)
 
 try:
     from EasyTer import cmd_is_claude

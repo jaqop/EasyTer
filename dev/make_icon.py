@@ -1,5 +1,9 @@
 """Generate a simple bilingual (Arabic + English) app icon -> icon.png / icon.ico"""
+import os
 from PIL import Image, ImageDraw, ImageFont
+
+# this script lives in dev/; write the icons to the repo root
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 SIZE = 512
 BG = (24, 26, 32)        # dark theme background
@@ -24,6 +28,6 @@ def centered(text, font, cy, fill):
 centered("ET", en, SIZE * 0.40, WHITE)   # English: EasyTer initials
 centered("إ", ar, SIZE * 0.72, ACCENT)  # Arabic letter "إ"
 
-img.save("icon.png")
-img.save("icon.ico", sizes=[(16, 16), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)])
-print("Saved icon.png and icon.ico")
+img.save(os.path.join(_ROOT, "icon.png"))
+img.save(os.path.join(_ROOT, "icon.ico"), sizes=[(16, 16), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)])
+print("Saved icon.png and icon.ico to", _ROOT)
