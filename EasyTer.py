@@ -213,6 +213,29 @@ def available_shells():
         shells.append(("WSL (Linux)", "wsl.exe"))
     return shells
 
+
+def restore_command(command):
+    """Validate a shell command coming from the saved session before spawning it.
+
+    easyter_session.json is a plain, user-writable file whose `command` is passed
+    straight to the pseudo-console at startup. Anything that can write that file
+    (a synced dotfile, a dropped archive, another local process) could otherwise
+    auto-run an arbitrary program on the next launch. Only allow commands whose
+    executable matches a shell we actually offer; fall back to the default shell
+    otherwise. New tabs/splits made in-session go through available_shells() and
+    are unaffected.
+
+    A saved command is always a bare shell executable with no arguments (that is
+    all serialize_node ever writes), so require an EXACT match: this rejects both
+    an argv list like ["cmd.exe","/c","calc"] and an argument-carrying string like
+    "cmd.exe /c calc", either of which would smuggle code past an exe-only check."""
+    if not isinstance(command, str):
+        return DEFAULT_SHELL
+    allowed = {DEFAULT_SHELL.lower()}
+    allowed.update(c.lower() for _, c in available_shells())
+    return command if command.lower() in allowed else DEFAULT_SHELL
+
+
 _prof("before PySide6 import")
 from PySide6.QtCore import Qt, QObject, Signal, QRect, QPointF, QTimer
 from PySide6.QtGui import (
@@ -516,6 +539,17 @@ def resolve_color(name, is_bg):
         except Exception:
             pass
     return BASE_BG if is_bg else BASE_FG
+
+
+def _bg_is_default(style):
+    """Does this cell's effective background (honouring reverse video) equal the base
+    background? Used to decide whether an all-blank line can be skipped when painting:
+    a blank line carrying a colored background (status bars, powerline segments,
+    reverse-video blocks) must still be drawn. style = (fg, bg, bold, reverse)."""
+    bg = resolve_color(style[1], True)
+    if style[3]:            # reverse video: the foreground shows as the background
+        bg = resolve_color(style[0], False)
+    return bg.rgb() == BASE_BG.rgb()
 
 
 _ARABIC_FONT_LOADED = False
@@ -1249,6 +1283,13 @@ class TerminalWidget(QWidget):
         self.search_term = ""
         self.search_matches = []   # absolute line numbers that match
         self.search_idx = -1
+        # a search scans the whole scrollback, so debounce keystrokes: coalesce
+        # rapid typing and only run once the user briefly pauses (see _schedule_search)
+        self._pending_search = ""
+        self._search_timer = QTimer(self)
+        self._search_timer.setSingleShot(True)
+        self._search_timer.setInterval(120)
+        self._search_timer.timeout.connect(lambda: self._do_search(self._pending_search))
 
         # caches for lines (PowerShell path) and for runs (Claude grid engine).
         # OrderedDict + LRU eviction (see _cache_put): a full-scrollback scroll
@@ -1591,6 +1632,11 @@ class TerminalWidget(QWidget):
         p.setFont(self.font)
         p.setPen(BASE_FG)  # default color for Claude-mode lines (no formats)
         self._row_layouts = {}
+        # maps each drawn row's layout text-position -> its starting pyte column.
+        # A wide char (emoji/CJK) is ONE position in the shaped layout but spans
+        # TWO grid columns, so xToCursor/cursorToX (text positions) and pyte
+        # columns diverge on any such line; this table bridges the two.
+        self._row_pos2col = {}
 
         with self.backend.lock:
             screen = self.backend.screen
@@ -1615,11 +1661,9 @@ class TerminalWidget(QWidget):
                 if not self.claude_mode:   # the grid engine is already cell-aligned
                     lay = self._row_layouts.get(cur_y)
                     if lay is not None:
-                        try:
-                            rx = lay[1].cursorToX(min(cur_x, ncols))
-                            cx = rx[0] if isinstance(rx, (tuple, list)) else rx
-                        except Exception:
-                            pass
+                        rx = self._col_to_x(lay[1], self._row_pos2col.get(cur_y), cur_x)
+                        if rx is not None:
+                            cx = rx
                 crect = QRect(int(cx), cy, self._cwi, self.ch)
                 if self.hasFocus():
                     if self._blink:                       # solid cursor when focused
@@ -1685,8 +1729,16 @@ class TerminalWidget(QWidget):
                     c0 = lo_c if L == lo_l else 0
                     c1 = hi_c if L == hi_l else ncols
                     if c1 > c0:
-                        p.fillRect(QRect(int(c0 * self.cw), yi * self.ch,
-                                         int((c1 - c0) * self.cw), self.ch), sel_color)
+                        x0 = int(c0 * self.cw)
+                        x1 = int(c1 * self.cw)
+                        lay = self._row_layouts.get(yi)
+                        p2c = self._row_pos2col.get(yi)
+                        if lay is not None and p2c:   # follow the shaped glyphs (wide chars / RTL)
+                            gx0 = self._col_to_x(lay[1], p2c, c0)
+                            gx1 = self._col_to_x(lay[1], p2c, c1)
+                            if gx0 is not None and gx1 is not None:
+                                x0, x1 = int(min(gx0, gx1)), int(max(gx0, gx1))
+                        p.fillRect(QRect(x0, yi * self.ch, max(0, x1 - x0), self.ch), sel_color)
 
             # search-result highlight (the whole matching line; the current one stronger)
             if self.search_matches:
@@ -1735,6 +1787,11 @@ class TerminalWidget(QWidget):
         # the line signature (content + style) is cheap with no Qt objects - the cache key
         chars = []
         runs = []
+        # pos2col[k] = pyte column of UTF-16 code-unit offset k in the layout text.
+        # It is indexed in UTF-16 units (not Python code points) because QTextLayout's
+        # xToCursor/cursorToX/FormatRange all count UTF-16 units, so an astral emoji
+        # (one code point, two units) must occupy two entries here to stay aligned.
+        pos2col = []
         cur = None
         rstart = 0          # in text positions (not columns) because continuation cells are skipped
         col = 0
@@ -1748,6 +1805,10 @@ class TerminalWidget(QWidget):
                 cur = st
                 rstart = len(chars)
             chars.append(d)
+            for c in d:                       # one entry per UTF-16 unit of the cell
+                pos2col.append(col)
+                if ord(c) > 0xFFFF:
+                    pos2col.append(col)       # surrogate pair -> second unit, same column
             # wide cell (emoji/CJK): skip the empty continuation cell after it
             # so the char is drawn at its natural width (two cells) and columns don't shift.
             if _char_width(d) == 2 and col + 1 < ncols and not row[col + 1].data:
@@ -1756,9 +1817,14 @@ class TerminalWidget(QWidget):
                 col += 1
         if cur is not None:
             runs.append((rstart, len(chars) - rstart, cur))
+        pos2col.append(col)   # end-of-line position maps to the column past the last char
         text = "".join(chars)
-        if not text.strip():
+        if not text.strip() and all(_bg_is_default(st) for (_, _, st) in runs):
+            # truly blank + default background (the common case): nothing to draw.
+            # A blank line with a colored background falls through and is drawn so
+            # its background is painted via the layout's FormatRanges.
             self._row_layouts[yi] = None
+            self._row_pos2col[yi] = None
             return
 
         # Claude mode: convert the reversed visual line to logical (includes English lines
@@ -1779,6 +1845,9 @@ class TerminalWidget(QWidget):
             self._layout_cache.move_to_end(key)   # mark as recently used
         cached[0].draw(p, QPointF(0, y + self._text_dy))
         self._row_layouts[yi] = cached
+        # rtl_fixed reorders the text, so the position->column map no longer holds
+        # (that path is Claude-mode only, which uses the cell-aligned grid engine)
+        self._row_pos2col[yi] = None if rtl_fixed else pos2col
 
     def _build_layout(self, text, runs):
         """Builds a QTextLayout with color formats (once per unique content)."""
@@ -1830,8 +1899,9 @@ class TerminalWidget(QWidget):
             wide = (_char_width(d) == 2 and c + 1 < ncols and not row[c + 1].data)
             cells.append((c, d, (ch.fg, ch.bg, ch.bold, ch.reverse), 2 if wide else 1))
             c += 2 if wide else 1
-        if not any(d.strip() for (_, d, _, _) in cells):
-            return
+        if (not any(d.strip() for (_, d, _, _) in cells)
+                and all(_bg_is_default(st) for (_, _, st, _) in cells)):
+            return   # blank + all-default background: nothing to paint (see _draw_row)
         # 1) paint cell backgrounds first, pinned to the grid (highlight blocks stay aligned)
         for (col, d, st, w) in cells:
             fg = resolve_color(st[0], False)
@@ -2141,13 +2211,32 @@ class TerminalWidget(QWidget):
             self._blink = True            # cursor solid right when typing
 
     # ---------- mouse text selection ----------
+    @staticmethod
+    def _col_to_x(line, pos2col, col):
+        """Pixel x of a pyte column on a shaped line, or None. Inverts pos2col
+        (column -> text position) then asks the layout, so wide chars and BiDi
+        reordering are respected."""
+        if pos2col is None:
+            return None
+        try:
+            tp = next((t for t, c in enumerate(pos2col) if c >= col), len(pos2col) - 1)
+            rx = line.cursorToX(tp)
+            return rx[0] if isinstance(rx, (tuple, list)) else rx
+        except Exception:
+            return None
+
     def _pos_to_cell(self, pos):
         yi = max(0, min(self.rows - 1, int(pos.y() // self.ch)))
         col = None
         lay = getattr(self, "_row_layouts", {}).get(yi)
         if lay is not None:
             try:
-                col = lay[1].xToCursor(float(pos.x()))  # exact logical column despite BiDi
+                tp = lay[1].xToCursor(float(pos.x()))   # text position in the shaped line
+                p2c = getattr(self, "_row_pos2col", {}).get(yi)
+                # convert the layout text position to a pyte grid column (they differ
+                # whenever a wide char precedes the click); fall back to the raw position
+                col = (p2c[tp] if p2c and 0 <= tp < len(p2c)
+                       else p2c[-1] if p2c else tp)
             except Exception:
                 col = None
         if col is None:
@@ -2361,6 +2450,18 @@ class TerminalWidget(QWidget):
             w = min(360, max(220, self.width() - 20))
             self.search_bar.setFixedWidth(w)
             self.search_bar.move(self.width() - w - 10, 8)
+
+    def _schedule_search(self, text):
+        """Debounced entry point for the search field's textChanged signal. Clearing
+        the box takes effect immediately (cheap and feels responsive); a non-empty
+        term waits out the debounce timer so a burst of keystrokes triggers one scan."""
+        self.search_term = text
+        if not text:
+            self._search_timer.stop()
+            self._do_search("")
+        else:
+            self._pending_search = text
+            self._search_timer.start()   # (re)start: fires 120ms after the last keystroke
 
     def _do_search(self, text):
         self.search_term = text
@@ -3352,7 +3453,7 @@ class SearchBar(QWidget):
         h.setSpacing(4)
         self.edit = QLineEdit()
         self.edit.setPlaceholderText(i18n.t("search.placeholder"))
-        self.edit.textChanged.connect(self.term._do_search)
+        self.edit.textChanged.connect(self.term._schedule_search)
         self.edit.installEventFilter(self)
         self.count = QLabel("")
         prev = QPushButton("▲")
@@ -3758,7 +3859,7 @@ def build_node(node):
     if not node:
         return TerminalWidget()
     if node.get("type") == "term":
-        return TerminalWidget(command=node.get("command"))
+        return TerminalWidget(command=restore_command(node.get("command")))
     if node.get("type") == "editor":
         return EditorWidget(path=node.get("path"), title=node.get("title"))
     orient = Qt.Horizontal if node.get("orient") == "h" else Qt.Vertical
