@@ -77,12 +77,25 @@ WSL, Claude Code, vim, …).
 EasyTer checks these on startup: if Python is too old or a package is missing, it
 shows a message box telling you exactly what to install instead of failing silently.
 
+## Download
+
+Get the source onto your computer first, then follow **Install** below.
+
+- **No Git:** click the green **`<> Code`** button at the top of this page →
+  **Download ZIP**, then right-click the downloaded ZIP → **Extract All...**
+  (don't run anything from inside the ZIP without extracting it first).
+- **With Git:**
+  ```sh
+  git clone https://github.com/jaqop/EasyTer.git
+  ```
+
 ## Install
 
-Double-click **`install.bat`**. It works from any folder: it shows where EasyTer
-is, warns you if that's a system/temporary folder, lets you install here or
-relocate to `C:\EasyTer` (recommended), then installs the dependencies. Or do it
-manually from the project folder:
+Double-click **`install.bat`** inside the extracted/cloned `EasyTer` folder. It
+works from any folder: it shows where EasyTer is, warns you if that's a
+system/temporary folder, lets you install here or relocate to `C:\EasyTer`
+(recommended), then installs the dependencies. Or do it manually from the
+project folder:
 
 ```sh
 cd path\to\EasyTer
