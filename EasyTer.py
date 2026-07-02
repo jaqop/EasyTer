@@ -150,6 +150,10 @@ OSC99_RE = re.compile(r'\x1b\]9;9;"?([^"\x07\x1b]+)"?(?:\x07|\x1b\\)')
 OSC7_RE = re.compile(r"\x1b\]7;file://[^/]*(/[^\x07\x1b]*)(?:\x07|\x1b\\)")
 # OSC 52: a program sets the system clipboard (e.g. yank in vim over SSH). Write-only.
 OSC52_RE = re.compile(r"\x1b\]52;[cpqs0-7]*;([A-Za-z0-9+/=]+)(?:\x07|\x1b\\)")
+# OSC 6969 (EasyTer-private): the shell's `edit <file>` command asks EasyTer to
+# open a path in the embedded editor pane. pyte discards the unknown OSC, so it
+# never shows as garbage; we scan the raw stream for it, like the OSCs above.
+OSC_EDIT_RE = re.compile(r"\x1b\]6969;([^\x07\x1b]+)(?:\x07|\x1b\\)")
 # PowerShell shell-integration: wrap the existing prompt (oh-my-posh-safe) to emit
 # OSC 133 markers so command blocks work. Runs once, after the profile loads.
 PS_SHELL_INTEGRATION = (
@@ -182,6 +186,16 @@ PS_SHELL_INTEGRATION = (
     "$s=if($PSVersionTable.PSEdition -eq 'Core'){'pwsh'}else{'powershell'};"
     "& {oh-my-posh init $s --config $cfg|Invoke-Expression} 2>$null;"
     "$ErrorActionPreference='Continue';__et_wrap};"
+    # `edit <file>`: open a path in EasyTer's editor pane. Resolves the argument
+    # to an absolute path relative to the current directory (works for a file
+    # that doesn't exist yet too), then emits OSC 6969 for EasyTer to intercept.
+    # Remaining args are joined so an unquoted path with spaces still works.
+    "function global:edit{param([Parameter(ValueFromRemainingArguments=$true)][string[]]$a);"
+    "if(-not $a){[Console]::Error.WriteLine('usage: edit <file>');return};"
+    "$p=$a -join ' ';"
+    "try{$full=$ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($p)}"
+    "catch{$full=$p};"
+    "[Console]::Write([char]27+']6969;'+$full+[char]7)};"
     # Bind F5 (no default PSReadLine action) to redraw the prompt in place. EasyTer
     # sends this silently after a resize so oh-my-posh's right-aligned segment
     # repositions to the new width without the user pressing Enter.
@@ -923,6 +937,7 @@ class PtyBackend(QObject):
     clipboard_set = Signal(str)        # a program set the clipboard via OSC 52
     cwd_changed = Signal(str)          # working directory changed (for dynamic tab titles)
     cmd_changed = Signal()             # the running command started/ended (for the tab tooltip)
+    edit_file = Signal(str)            # `edit <file>` in the shell (OSC 6969); arg = absolute path
 
     def __init__(self, cols, rows, command="powershell.exe", start_cwd=None):
         super().__init__()
@@ -1021,6 +1036,7 @@ class PtyBackend(QObject):
                 self._scan_alt(data)                 # detect the alternate screen (on the raw data)
                 self._scan_cwd(data)                 # track the working directory
                 self._scan_osc52(data)               # programs setting the clipboard
+                self._scan_edit(data)                # `edit <file>` -> open in the editor pane
                 data = self._carry + data
                 data = KITTY_KB_RE.sub("", data)      # strip the stray 'u'
                 # carry any incomplete sequence at the end of the chunk to the next read (avoid splitting)
@@ -1134,6 +1150,15 @@ class PtyBackend(QObject):
                     self.cwd_changed.emit(cwd)
             except Exception:
                 pass
+
+    def _scan_edit(self, data):
+        """The shell's `edit <file>` command (OSC 6969) asks to open a path."""
+        if "\x1b]6969;" not in data:
+            return
+        for m in OSC_EDIT_RE.finditer(data):
+            path = m.group(1).strip()
+            if path:
+                self.edit_file.emit(path)
 
     def _scan_osc52(self, data):
         """A program set the clipboard via OSC 52 (write-only; queries ignored)."""
@@ -1316,6 +1341,7 @@ class TerminalWidget(QWidget):
             lambda txt: QApplication.clipboard().setText(txt))
         self.backend.cwd_changed.connect(self._on_cwd_changed)
         self.backend.cmd_changed.connect(self._on_cmd_changed)
+        self.backend.edit_file.connect(self._on_edit_file)
         self._cmd_started = None      # time the user submitted a command (for finish notify)
         self._exited = False
 
@@ -1346,6 +1372,22 @@ class TerminalWidget(QWidget):
         while w is not None and not isinstance(w, SessionWidget):
             w = w.parentWidget()
         return w
+
+    def _on_edit_file(self, path):
+        """`edit <file>` from the shell: open the path in an editor pane. Reuses an
+        existing editor in this tab if there is one, else splits one beside this
+        terminal. Runs on the UI thread (Qt delivers the cross-thread signal)."""
+        sess = self._session()
+        if sess is None:
+            return
+        editors = sess.findChildren(EditorWidget)
+        if editors:
+            ed = editors[0]
+        else:
+            ed = EditorWidget()
+            sess.split_pane(self, Qt.Horizontal, factory=lambda w=ed: w)
+        ed.load_file(path)
+        ed.setFocus()
 
     # ---- plugin API ----
     def send(self, text):
@@ -3651,6 +3693,17 @@ class EditorWidget(QWidget):
         path, _ = QFileDialog.getOpenFileName(self, i18n.t("dialog.open_file"))
         if path:
             self.open_path(path)
+
+    def load_file(self, path):
+        """Open an existing file, or set up a brand-new one (empty buffer whose
+        first Ctrl+S creates it) — used by the shell's `edit <file>` command."""
+        if os.path.exists(path):
+            self.open_path(path)
+        else:
+            self.path = path
+            self.edit.setPlainText("")
+            self.edit.document().setModified(False)
+            self._update_header()
 
     def open_path(self, path):
         try:
