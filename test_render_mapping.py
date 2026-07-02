@@ -16,6 +16,7 @@ Run:  python -m unittest test_render_mapping
       (needs PySide6/pyte/pywinpty; skipped automatically if they're missing)
 """
 import os
+import time
 import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -173,6 +174,79 @@ class SearchDebounceTest(unittest.TestCase):
         # when the timer fires (invoke its effect directly) the scan runs
         self.tw._do_search(self.tw._pending_search)
         self.assertTrue(self.tw.search_matches, "the deferred scan should find 'hello'")
+
+
+@unittest.skipIf(E is None, "EasyTer import failed (GUI deps missing)")
+class BackendReleaseTest(unittest.TestCase):
+    """A shell that exits on its own must release the pseudo-console, not linger."""
+
+    def test_release_marks_dead_and_nulls_proc(self):
+        tw = E.TerminalWidget(command="cmd.exe")
+        b = tw.backend
+        self.assertTrue(b._alive)
+        self.assertIsNotNone(b.proc)
+        b._release()
+        self.assertFalse(b._alive)
+        self.assertIsNone(b.proc)
+
+    def test_release_is_idempotent(self):
+        b = E.TerminalWidget(command="cmd.exe").backend
+        b._release()
+        b._release()   # must not raise on the second call (proc already None)
+        self.assertIsNone(b.proc)
+
+    def test_close_delegates_to_release(self):
+        b = E.TerminalWidget(command="cmd.exe").backend
+        b.close()
+        self.assertFalse(b._alive)
+        self.assertIsNone(b.proc)
+
+    def test_write_after_release_is_noop(self):
+        b = E.TerminalWidget(command="cmd.exe").backend
+        b._release()
+        b.write("echo hi\r")   # guarded by _alive / proc-is-None: must not raise
+
+
+@unittest.skipIf(E is None, "EasyTer import failed (GUI deps missing)")
+class ReaderResilienceTest(unittest.TestCase):
+    """A malformed chunk must not kill the reader thread (which would freeze the pane)."""
+
+    def _screen_has(self, b, token):
+        with b.lock:
+            return token in "\n".join(b.screen.display)
+
+    def _wait_for(self, b, token, timeout=8.0):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if self._screen_has(b, token):
+                return True
+            time.sleep(0.05)
+        return False
+
+    def test_reader_survives_a_feed_exception(self):
+        tw = E.TerminalWidget(command="cmd.exe")
+        b = tw.backend
+        self.addCleanup(b.close)
+        # inject a one-time failure the first time a chunk carrying the token is fed
+        orig = b._feed_with_marks
+        state = {"boomed": False}
+
+        def patched(data):
+            if not state["boomed"] and "BOOMTOKEN" in data:
+                state["boomed"] = True
+                raise RuntimeError("injected feed failure")
+            return orig(data)
+
+        b._feed_with_marks = patched
+        # let the shell reach its prompt, then trigger the failure and follow-up output
+        self.assertTrue(self._wait_for(b, ">", timeout=8.0), "cmd never reached a prompt")
+        b.write("echo BOOMTOKEN\r")
+        self.assertTrue(self._wait_for(b, "BOOMTOKEN", timeout=8.0))
+        self.assertTrue(state["boomed"], "the injected feed failure never fired")
+        # the reader must have recovered and still be processing subsequent output
+        b.write("echo AFTERTOKEN\r")
+        self.assertTrue(self._wait_for(b, "AFTERTOKEN", timeout=8.0),
+                        "reader died on the bad chunk (pane would be frozen)")
 
 
 if __name__ == "__main__":

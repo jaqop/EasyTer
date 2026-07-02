@@ -1052,26 +1052,36 @@ class PtyBackend(QObject):
                         break
                     time.sleep(0.005)
                     continue
-                self._scan_alt(data)                 # detect the alternate screen (on the raw data)
-                self._scan_cwd(data)                 # track the working directory
-                self._scan_osc52(data)               # programs setting the clipboard
-                data = self._carry + data
-                data = KITTY_KB_RE.sub("", data)      # strip the stray 'u'
-                # carry any incomplete sequence at the end of the chunk to the next read (avoid splitting)
-                m = INCOMPLETE_TAIL_RE.search(data)
-                if m and m.group():
-                    self._carry = data[m.start():]
-                    data = data[:m.start()]
-                else:
+                # Processing a chunk must never kill the reader: if a helper or pyte
+                # trips on a malformed VT sequence, the pane would otherwise freeze
+                # forever while the shell keeps running. Catch per-chunk, drop the bad
+                # data, reset the carry, and keep reading. (A genuinely dead pipe raises
+                # from proc.read() above and is handled by the outer except -> exit.)
+                try:
+                    self._scan_alt(data)             # detect the alternate screen (on the raw data)
+                    self._scan_cwd(data)             # track the working directory
+                    self._scan_osc52(data)           # programs setting the clipboard
+                    data = self._carry + data
+                    data = KITTY_KB_RE.sub("", data)  # strip the stray 'u'
+                    # carry any incomplete sequence at the end of the chunk to the next read
+                    m = INCOMPLETE_TAIL_RE.search(data)
+                    if m and m.group():
+                        self._carry = data[m.start():]
+                        data = data[:m.start()]
+                    else:
+                        self._carry = ""
+                    if data:
+                        self._feed_with_marks(data)
+                        self.data_ready.emit()
+                except Exception as e:
                     self._carry = ""
-                if data:
-                    self._feed_with_marks(data)
-                    self.data_ready.emit()
+                    print("[easyter reader] recovered from a bad chunk:", e)
         except EOFError:
             pass
         except Exception:
             pass
         finally:
+            self._release()          # release the pseudo-console when the shell exits on its own
             try:
                 self.exited.emit()
             except Exception:
@@ -1242,12 +1252,21 @@ class PtyBackend(QObject):
         except Exception:
             pass
 
-    def close(self):
+    def _release(self):
+        """Mark the backend dead and release the pseudo-console handles. Idempotent and
+        best-effort: called both when the user closes the pane (close) and when the shell
+        exits on its own (the reader's finally), so a self-exited shell no longer leaves
+        _alive=True with the conhost handles dangling until the widget is garbage-collected."""
         self._alive = False
-        try:
-            self.proc.terminate(force=True)
-        except Exception:
-            pass
+        proc, self.proc = self.proc, None
+        if proc is not None:
+            try:
+                proc.terminate(force=True)
+            except Exception:
+                pass
+
+    def close(self):
+        self._release()
 
 
 class TerminalWidget(QWidget):
