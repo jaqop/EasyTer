@@ -65,11 +65,24 @@ WSL, Claude Code, vim, …).
   toggles it manually for any tool that pre-reverses Arabic.
 - Bilingual UI: **English (default)** and Arabic. Local-first, **no telemetry**.
 
-## Requirements
+## Quick start — no Python, no Git, one file
+
+**[⬇ Download EasyTer.exe from the latest Release](https://github.com/jaqop/EasyTer/releases/latest)**
+— a single standalone `EasyTer.exe` (~40 MB). Download it, double-click it,
+done. No Python, no pip, no Git, no PATH setup. Your settings are stored in
+`~\.easyter\`, so the exe can live anywhere (Desktop, USB stick, `C:\Tools`, …).
+
+> Windows SmartScreen may warn on first run because the exe is new and
+> unsigned — click **More info → Run anyway**.
+
+Everything below this point is only for **running from source** (contributors,
+plugin developers, or anyone who prefers `python EasyTer.py`).
+
+## Requirements (from source)
 
 Everything you need before you start, in order. New to Windows dev tools?
 Read the notes below the table too — they cover the mistakes people usually
-hit.
+hit. **None of this is needed if you use the exe above.**
 
 | # | Requirement | Download link | Needed for | You install it? |
 |---|---|---|---|---|
@@ -99,7 +112,7 @@ EasyTer also checks all of this on startup: if Python is too old or a package
 is missing, it shows a message box telling you exactly what to install
 instead of failing silently.
 
-## Download
+## Download (source)
 
 Get the source onto your computer first, then follow **Install** below.
 
@@ -124,7 +137,7 @@ Get the source onto your computer first, then follow **Install** below.
   (`cd EasyTer` is required — `git clone` creates that folder, it does not
   put the files in your current directory.)
 
-## Install
+## Install (source)
 
 Double-click **`install.bat`** inside the extracted/cloned `EasyTer` folder —
 the one containing `EasyTer.py`, not its parent. It works from any folder: it
@@ -137,7 +150,7 @@ cd path\to\EasyTer
 pip install -r requirements.txt
 ```
 
-## Run
+## Run (source)
 
 ```sh
 pythonw EasyTer.py
@@ -149,6 +162,12 @@ If nothing happens when you run this (`pythonw` shows no console, so errors are
 silent), run `python EasyTer.py` instead — plain `python` keeps the window open
 and prints the actual error, which is usually either a wrong folder (see
 **Download** above) or missing packages (see **Install** above).
+
+## Build your own exe
+
+`build.bat` (or `python -m PyInstaller EasyTer.spec --noconfirm`) produces a
+standalone `dist\EasyTer.exe`. The [release workflow](.github/workflows/release.yml)
+builds and attaches it to a GitHub Release automatically on every `v*` tag.
 
 ## Language
 

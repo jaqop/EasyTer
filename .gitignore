@@ -3,6 +3,10 @@ __pycache__/
 *.pyc
 *.pyo
 
+# PyInstaller build output (EasyTer.spec itself IS tracked)
+build/
+dist/
+
 # EasyTer runtime / per-machine state (defaults ship in code)
 easyter_config.json
 easyter_session.json

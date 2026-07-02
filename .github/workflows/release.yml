@@ -1,0 +1,45 @@
+name: Build EasyTer.exe
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: python -m pip install PySide6-Essentials "pywinpty>=3.0.5" pyte wcwidth pyinstaller
+
+      - name: Build with PyInstaller
+        run: python -m PyInstaller EasyTer.spec --noconfirm
+
+      - name: Smoke-check the exe exists
+        shell: pwsh
+        run: |
+          if (-not (Test-Path dist\EasyTer.exe)) { throw "dist\EasyTer.exe was not produced" }
+          $size = (Get-Item dist\EasyTer.exe).Length / 1MB
+          Write-Host ("EasyTer.exe built: {0:N1} MB" -f $size)
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: EasyTer-windows
+          path: dist/EasyTer.exe
+
+      - name: Attach exe to the GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/EasyTer.exe
+          generate_release_notes: true

@@ -226,7 +226,20 @@ BASE_BG = QColor("#0d1117")
 BASE_FG = QColor("#e6edf3")
 
 # ---- Settings (saved/loaded from a file next to the program) ----
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+# Frozen (PyInstaller) support: bundled read-only assets (fonts/, icon.ico) are
+# unpacked to sys._MEIPASS, which vanishes on exit — so config/session/logs must
+# go somewhere persistent instead. ~/.easyter is already EasyTer's home for
+# plugins, so reuse it. From source, both stay next to EasyTer.py as before.
+_FROZEN = bool(getattr(sys, "frozen", False))
+RESOURCE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+if _FROZEN:
+    SCRIPT_DIR = os.path.join(os.path.expanduser("~"), ".easyter")
+    try:
+        os.makedirs(SCRIPT_DIR, exist_ok=True)
+    except Exception:
+        SCRIPT_DIR = os.path.dirname(os.path.abspath(sys.executable))
+else:
+    SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(SCRIPT_DIR, "easyter_config.json")
 SESSION_PATH = os.path.join(SCRIPT_DIR, "easyter_session.json")
 SETTINGS = {
@@ -507,7 +520,7 @@ def _ensure_arabic_font():
     # Arabic works from a fresh clone), then fall back to the user's ~/.wezterm-fonts.
     for fn in ("Amiri-Regular.ttf", "Amiri-Bold.ttf",
                "Vazirmatn.ttf", "NotoNaskhArabic.ttf"):
-        for base in (os.path.join(SCRIPT_DIR, "fonts"),
+        for base in (os.path.join(RESOURCE_DIR, "fonts"),
                      os.path.join(os.path.expanduser("~"), ".wezterm-fonts")):
             path = os.path.join(base, fn)
             if os.path.exists(path):
@@ -4446,7 +4459,7 @@ class MainWindow(QWidget):
         """Show a desktop notification via a (lazily created) tray icon."""
         try:
             if getattr(self, "_tray", None) is None:
-                icon_path = os.path.join(SCRIPT_DIR, "icon.ico")
+                icon_path = os.path.join(RESOURCE_DIR, "icon.ico")
                 ic = QIcon(icon_path) if os.path.exists(icon_path) else self.windowIcon()
                 self._tray = QSystemTrayIcon(ic, self)
                 self._tray.setToolTip("EasyTer")
