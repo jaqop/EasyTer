@@ -3545,18 +3545,28 @@ class EditorWidget(QWidget):
         self.header = QLabel("")
         self.header.setToolTip(i18n.t("editor.rename_tip"))
         self.header.installEventFilter(self)
+        open_btn = QPushButton("\U0001F4C2")   # 📂 open a file (also Ctrl+O)
+        open_btn.setFixedSize(24, 20)
+        open_btn.setToolTip(i18n.t("dialog.open_file") + " (Ctrl+O)")
+        open_btn.setStyleSheet(
+            "QPushButton{border:none;background:transparent;color:#9aa4b2;font-size:13px;}"
+            "QPushButton:hover{color:#2ea043;}")
+        open_btn.setFocusPolicy(Qt.NoFocus)    # clicking must not steal focus from the editor
+        open_btn.clicked.connect(self.open_dialog)
         close_btn = QPushButton("×")
         close_btn.setFixedSize(22, 20)
         close_btn.setToolTip(i18n.t("menu.close_pane").split("\t")[0])
         close_btn.setStyleSheet(
             "QPushButton{border:none;background:transparent;color:#9aa4b2;font-size:16px;}"
             "QPushButton:hover{color:#ff6b6b;}")
+        close_btn.setFocusPolicy(Qt.NoFocus)
         close_btn.clicked.connect(self._close_self)
         hbar = QWidget()
         hb = QHBoxLayout(hbar)
         hb.setContentsMargins(0, 0, 4, 0)
         hb.setSpacing(0)
         hb.addWidget(self.header, 1)
+        hb.addWidget(open_btn)
         hb.addWidget(close_btn)
         self.edit = CodeEdit(self)
         self.highlighter = CodeHighlighter(self.edit.document())
