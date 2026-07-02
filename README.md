@@ -94,23 +94,34 @@ shows a message box telling you exactly what to install instead of failing silen
 
 Get the source onto your computer first, then follow **Install** below.
 
+> **Important:** both methods below create their own `EasyTer` folder for you.
+> Run them from an empty parent folder (e.g. `Desktop`, `Documents`, or
+> `C:\DevSoft`) — don't create a folder named `EasyTer` yourself and `cd`
+> into it first, or you'll end up with a nested `EasyTer\EasyTer` and
+> commands like `pip install` / `pythonw EasyTer.py` will fail with
+> "file not found" because you're one level above the actual code.
+
 - **No Git (recommended for most people):** click the green **`<> Code`**
   button at the top of this page → **Download ZIP**, then right-click the
   downloaded ZIP → **Extract All...** (don't run anything from inside the ZIP
-  without extracting it first).
+  without extracting it first). This creates an `EasyTer` folder — open it
+  before continuing.
 - **With Git** — install [Git for Windows](https://git-scm.com/downloads) first,
   then from PowerShell or Git Bash:
   ```sh
   git clone https://github.com/jaqop/EasyTer.git
+  cd EasyTer
   ```
+  (`cd EasyTer` is required — `git clone` creates that folder, it does not
+  put the files in your current directory.)
 
 ## Install
 
-Double-click **`install.bat`** inside the extracted/cloned `EasyTer` folder. It
-works from any folder: it shows where EasyTer is, warns you if that's a
-system/temporary folder, lets you install here or relocate to `C:\EasyTer`
-(recommended), then installs the dependencies. Or do it manually from the
-project folder:
+Double-click **`install.bat`** inside the extracted/cloned `EasyTer` folder —
+the one containing `EasyTer.py`, not its parent. It works from any folder: it
+shows where EasyTer is, warns you if that's a system/temporary folder, lets
+you install here or relocate to `C:\EasyTer` (recommended), then installs the
+dependencies. Or do it manually from the project folder:
 
 ```sh
 cd path\to\EasyTer
@@ -124,6 +135,11 @@ pythonw EasyTer.py
 ```
 
 Or double-click `EasyTer.vbs` (no console window), or run `run.bat`.
+
+If nothing happens when you run this (`pythonw` shows no console, so errors are
+silent), run `python EasyTer.py` instead — plain `python` keeps the window open
+and prints the actual error, which is usually either a wrong folder (see
+**Download** above) or missing packages (see **Install** above).
 
 ## Language
 
