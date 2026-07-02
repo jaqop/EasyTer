@@ -13,6 +13,7 @@ Run with:  pythonw EasyTer.py   (or EasyTer.vbs / run.bat)
 
 import ctypes
 import ctypes.wintypes
+from collections import OrderedDict
 import glob
 import itertools
 import json
@@ -106,6 +107,15 @@ if _missing:
 import pyte
 from winpty import PtyProcess
 from wcwidth import wcwidth as _wcwidth_raw
+
+
+def _lru_put(cache, key, value, cap):
+    """Insert into an OrderedDict-backed cache, evicting the least-recently-used
+    entry when over `cap`. Evicts one at a time (not a full .clear()) so the hot
+    working set survives, avoiding a re-shape stall when the cap is reached."""
+    cache[key] = value
+    if len(cache) > cap:
+        cache.popitem(last=False)   # drop the oldest (LRU)
 
 
 def _char_width(d):
@@ -1240,9 +1250,14 @@ class TerminalWidget(QWidget):
         self.search_matches = []   # absolute line numbers that match
         self.search_idx = -1
 
-        # caches for lines (PowerShell path) and for runs (Claude grid engine)
-        self._layout_cache = {}
-        self._run_cache = {}
+        # caches for lines (PowerShell path) and for runs (Claude grid engine).
+        # OrderedDict + LRU eviction (see _cache_put): a full-scrollback scroll
+        # touches more unique lines than the cap, and a hard .clear() at the cap
+        # would wipe every layout and re-shape the next screenful from scratch
+        # (a visible periodic hitch). Evicting only the oldest entry keeps the
+        # working set warm.
+        self._layout_cache = OrderedDict()
+        self._run_cache = OrderedDict()
 
         # show a "starting…" hint until the shell produces its first output
         # (conhost/ConPTY cold-start can take a couple of seconds), so the
@@ -1759,9 +1774,9 @@ class TerminalWidget(QWidget):
         cached = self._layout_cache.get(key)
         if cached is None:
             cached = self._build_layout(text, () if rtl_fixed else runs)
-            if len(self._layout_cache) > 800:
-                self._layout_cache.clear()
-            self._layout_cache[key] = cached
+            _lru_put(self._layout_cache, key, cached, 800)
+        else:
+            self._layout_cache.move_to_end(key)   # mark as recently used
         cached[0].draw(p, QPointF(0, y + self._text_dy))
         self._row_layouts[yi] = cached
 
@@ -1885,6 +1900,8 @@ class TerminalWidget(QWidget):
             return
         key = (text, tuple(spans), is_ar)
         cached = self._run_cache.get(key)
+        if cached is not None:
+            self._run_cache.move_to_end(key)      # mark as recently used
         if cached is None:
             layout = QTextLayout(text, self.font)
             opt = QTextOption()
@@ -1912,10 +1929,8 @@ class TerminalWidget(QWidget):
             line.setLineWidth(100000)
             line.setPosition(QPointF(0, 0))
             layout.endLayout()
-            if len(self._run_cache) > 2000:
-                self._run_cache.clear()
             cached = (layout, line)
-            self._run_cache[key] = cached
+            _lru_put(self._run_cache, key, cached, 2000)
         layout, line = cached
         natw = line.naturalTextWidth()
         if is_ar and natw > boxw + 0.5:
