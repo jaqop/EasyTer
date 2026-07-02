@@ -67,13 +67,21 @@ WSL, Claude Code, vim, …).
 
 ## Requirements
 
-New to Windows dev tools? You need these two before anything else works:
+Everything you need before you start, in order. New to Windows dev tools?
+Read the notes below the table too — they cover the mistakes people usually
+hit.
 
-| Requirement | Download link | Needed for |
-|---|---|---|
-| **Windows 10 or 11** | — (EasyTer uses ConPTY, which is Windows-only) | running EasyTer |
-| **Python 3.10–3.14** | [python.org/downloads](https://www.python.org/downloads/) | running `install.bat` / EasyTer itself |
-| **Git** (optional) | [git-scm.com/downloads](https://git-scm.com/downloads) | only if you clone instead of using Download ZIP |
+| # | Requirement | Download link | Needed for | You install it? |
+|---|---|---|---|---|
+| 1 | **Windows 10 (version 1809 / build 17763) or Windows 11** | — | ConPTY, which EasyTer is built on; Windows-only | Already on your PC |
+| 2 | **Internet connection** | — | downloading the source and the Python packages below (one-time) | — |
+| 3 | **Python 3.10–3.14**, with pip (included by the installer) | [python.org/downloads](https://www.python.org/downloads/) | running `install.bat` and EasyTer itself | **Yes — do this first** |
+| 4 | **~200 MB free disk space** | — | Python itself plus PySide6/pywinpty/pyte/wcwidth | Already have it, usually |
+| 5 | **Git** — optional | [git-scm.com/downloads](https://git-scm.com/downloads) | only if you `git clone` instead of using Download ZIP | Only if you choose the Git method |
+| 6 | **Administrator rights** — optional | — | only needed if you relocate EasyTer to `C:\EasyTer` and get a permissions error | Only if prompted |
+| 7 | **Python packages:** `PySide6` (≥ 6.5), `pywinpty` (≥ 3.0.5), `pyte`, `wcwidth` | — | running EasyTer | **No — `install.bat` installs these for you** |
+
+Notes:
 
 - On the Python installer's first screen, **tick "Add python.exe to PATH"**
   before clicking Install — this is the #1 cause of "python is not
@@ -82,13 +90,14 @@ New to Windows dev tools? You need these two before anything else works:
 - If typing `python --version` opens the Microsoft Store instead of printing
   a version, that's a Windows shortcut stub, not real Python — install from
   the link above instead (this is normal on a fresh Windows install).
-- **Python packages:** `PySide6` (≥ 6.5), `pywinpty` (≥ 3.0.5), `pyte`, `wcwidth`.
-  These are installed for you by `install.bat` (or `pip install -r requirements.txt`)
-  — you don't need to install them yourself. `pywinpty` 3.0.5 ships wheels for
-  Python 3.10–3.14, so no source build is needed.
+- `pywinpty` 3.0.5 ships prebuilt wheels for Python 3.10–3.14, so no
+  compiler / Visual Studio Build Tools are needed.
+- You do **not** need to install the packages in row 7 yourself —
+  `install.bat` (or `pip install -r requirements.txt`) does it for you.
 
-EasyTer checks these on startup: if Python is too old or a package is missing, it
-shows a message box telling you exactly what to install instead of failing silently.
+EasyTer also checks all of this on startup: if Python is too old or a package
+is missing, it shows a message box telling you exactly what to install
+instead of failing silently.
 
 ## Download
 
