@@ -65,12 +65,13 @@ WSL, Claude Code, vim, …).
   toggles it manually for any tool that pre-reverses Arabic.
 - Bilingual UI: **English (default)** and Arabic. Local-first, **no telemetry**.
 
-## Quick start — no Python, no Git, one file
+## Quick start — no Python, no Git, one download
 
-**[⬇ Download EasyTer.exe from the latest Release](https://github.com/jaqop/EasyTer/releases/latest)**
-— a single standalone `EasyTer.exe` (~40 MB). Download it, double-click it,
-done. No Python, no pip, no Git, no PATH setup. Your settings are stored in
-`~\.easyter\`, so the exe can live anywhere (Desktop, USB stick, `C:\Tools`, …).
+**[⬇ Download EasyTer-windows.zip from the latest Release](https://github.com/jaqop/EasyTer/releases/latest)**
+— extract it anywhere and run `EasyTer\EasyTer.exe`. Done. No Python, no pip,
+no Git, no PATH setup, and no per-launch unpacking (it starts instantly). Your
+settings are stored in `~\.easyter\`, so the folder can live anywhere (Desktop,
+USB stick, `C:\Tools`, …).
 
 > Windows SmartScreen may warn on first run because the exe is new and
 > unsigned — click **More info → Run anyway**.
@@ -165,9 +166,10 @@ and prints the actual error, which is usually either a wrong folder (see
 
 ## Build your own exe
 
-`build.bat` (or `python -m PyInstaller EasyTer.spec --noconfirm`) produces a
-standalone `dist\EasyTer.exe`. The [release workflow](.github/workflows/release.yml)
-builds and attaches it to a GitHub Release automatically on every `v*` tag.
+`build.bat` (or `python -m PyInstaller EasyTer.spec --noconfirm`) produces the
+standalone app in `dist\EasyTer\` — run `dist\EasyTer\EasyTer.exe` directly, or
+zip the folder to share it. The [release workflow](.github/workflows/release.yml)
+builds it and attaches the zip to a GitHub Release automatically on every `v*` tag.
 
 ## Language
 
