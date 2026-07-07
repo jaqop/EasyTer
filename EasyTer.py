@@ -141,6 +141,16 @@ KITTY_KB_RE = re.compile(r"\x1b\[[<>=?][0-9;]*u")
 INCOMPLETE_TAIL_RE = re.compile(r"\x1b\[?[0-9;?<>=]*$")
 # Clickable links: match http(s) URLs in the visible text (Ctrl+click to open)
 URL_RE = re.compile(r"""https?://[^\s<>"'`)\]}]+""")
+# file references in program output (compiler/pytest/grep style), optionally
+# with a :line suffix - Windows (C:\x\y.py), relative (src\app.py) and ~ forms.
+# An extension is required as the "this is a file" signal; _file_at() then
+# checks the path actually exists before making it clickable.
+FILEPATH_RE = re.compile(
+    r"(?:[A-Za-z]:[\\/]|~[\\/])?"          # drive / home prefix
+    r"(?:[\w.\-]+[\\/])*"                  # directories
+    r"[\w.\-]+\.[A-Za-z0-9_]{1,10}"        # file name with an extension
+    r"(?::\d+)?"                           # optional :line
+)
 # Shell-integration markers (OSC 133, FinalTerm/iTerm2): A=prompt start,
 # B=command start, C=output start, D[;exit]=command end. Used for command blocks.
 OSC133_RE = re.compile(r"\x1b\]133;([A-D])([^\x07\x1b]*)(?:\x07|\x1b\\)")
@@ -241,7 +251,7 @@ from PySide6.QtCore import Qt, QObject, Signal, QRect, QPointF, QTimer
 from PySide6.QtGui import (
     QFont, QFontMetrics, QFontMetricsF, QPainter, QColor, QKeyEvent, QPen,
     QTextLayout, QTextCharFormat, QTextOption, QFontDatabase, QSyntaxHighlighter,
-    QPixmap, QIcon,
+    QPixmap, QIcon, QTextCursor,
 )
 from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QMenu,
@@ -764,6 +774,46 @@ def _key_from_token(tok):
         return None
 
 
+def kitty_encode_key(key, ctrl, alt, shift):
+    """Kitty keyboard protocol (flag 1, "disambiguate") CSI u encoding.
+
+    Returns the escape sequence for key presses the legacy encoding can't
+    represent unambiguously, or None to fall back to the legacy path. Kept
+    deliberately at the disambiguate level: plain printable text, plain
+    Enter/Tab/Backspace and unmodified arrows stay legacy, exactly as the
+    spec allows - only Esc, modified keys and ctrl/alt combos change."""
+    mods = 1 + (1 if shift else 0) + (2 if alt else 0) + (4 if ctrl else 0)
+
+    def csiu(cp):
+        return "\x1b[%du" % cp if mods == 1 else "\x1b[%d;%du" % (cp, mods)
+
+    if key == Qt.Key_Escape:
+        return csiu(27)          # the whole point: Esc stops being ambiguous
+    arrows = {Qt.Key_Up: "A", Qt.Key_Down: "B", Qt.Key_Right: "C",
+              Qt.Key_Left: "D", Qt.Key_Home: "H", Qt.Key_End: "F"}
+    if key in arrows:
+        if mods == 1:
+            return None          # plain arrows keep legacy CSI A..D
+        return "\x1b[1;%d%s" % (mods, arrows[key])   # shift/ctrl+arrows now work
+    if mods == 1:
+        return None              # plain keys: legacy text path
+    if key in (Qt.Key_Return, Qt.Key_Enter):
+        return csiu(13)
+    if key in (Qt.Key_Tab, Qt.Key_Backtab):
+        return csiu(9)           # shift+tab -> CSI 9;2u
+    if key == Qt.Key_Backspace:
+        return csiu(127)
+    if key == Qt.Key_Space:
+        return csiu(32)          # ctrl+space finally distinguishable from NUL
+    if not (ctrl or alt):
+        return None              # shift+printable is just text
+    if Qt.Key_A <= key <= Qt.Key_Z:
+        return csiu(key - Qt.Key_A + ord("a"))
+    if Qt.Key_Space < int(key) <= Qt.Key_AsciiTilde:
+        return csiu(int(key))    # digits/punctuation at their ASCII code
+    return None
+
+
 def _parse_combo(combo):
     parts = [p.strip().lower() for p in combo.split("+")]
     return (("ctrl" in parts), ("alt" in parts), ("shift" in parts),
@@ -969,6 +1019,9 @@ class PtyBackend(QObject):
         self.alt_screen = False     # is a full-screen TUI program active now?
         self.at_prompt = False      # idle at an interactive prompt (OSC 133 B, no command running)
         self.bracketed_paste = False  # does the program want bracketed paste (?2004h)?
+        self.kitty_kb = [0]     # kitty keyboard protocol flags stack; top = active flags
+        self.sync_output = False    # DECSET 2026: app is mid-frame, repaints held
+        self._sync_since = 0.0      # when the current sync began (stuck-app guard)
         self.cwd = None             # current working directory (from OSC 9;9 / OSC 7)
         self.running_cmd = ""       # the command line currently executing ("" = idle at prompt)
         self._prompt_col = None     # screen column where the prompt ends / input begins (OSC 133 B)
@@ -1062,7 +1115,7 @@ class PtyBackend(QObject):
                     self._scan_cwd(data)             # track the working directory
                     self._scan_osc52(data)           # programs setting the clipboard
                     data = self._carry + data
-                    data = KITTY_KB_RE.sub("", data)  # strip the stray 'u'
+                    data = self._scan_kitty_kb(data)  # answer/track kitty kb, strip from pyte
                     # carry any incomplete sequence at the end of the chunk to the next read
                     m = INCOMPLETE_TAIL_RE.search(data)
                     if m and m.group():
@@ -1109,7 +1162,7 @@ class PtyBackend(QObject):
                 params = (m.group(2) or "").lstrip(";")
                 abs_line = len(self.screen.history.top) + self.screen.cursor.y
                 if kind == "A":                     # a new prompt starts here
-                    self.command_marks.append([abs_line, None])
+                    self.command_marks.append([abs_line, None, ""])
                     if len(self.command_marks) > 2000:
                         del self.command_marks[:1000]
                     if self.running_cmd:            # back to idle
@@ -1142,6 +1195,56 @@ class PtyBackend(QObject):
         if cmd_dirty:
             self.cmd_changed.emit()
 
+    def _scan_kitty_kb(self, data):
+        """Kitty keyboard protocol negotiation (progressive enhancement).
+
+        Modern TUIs (neovim, helix, kitty's own tools) probe support with
+        CSI ? u and push their desired flags with CSI > flags u. We track the
+        flag stack, answer the probe, and strip the sequences before pyte sees
+        them (pyte would print them as garbage). keyPressEvent consults
+        kitty_kb[-1] to decide between legacy and CSI u key encoding."""
+        if KITTY_KB_RE.search(data) is None:
+            return data
+
+        def _one(m):
+            seq = m.group(0)
+            kind = seq[2]
+            body = seq[3:-1]
+            if kind == "?":                      # query -> report active flags
+                self.write("\x1b[?%du" % self.kitty_kb[-1])
+            elif kind == ">":                    # push new flags
+                try:
+                    flags = int(body.split(";")[0] or "0")
+                except ValueError:
+                    flags = 0
+                self.kitty_kb.append(flags & 0b11111)
+                if len(self.kitty_kb) > 32:      # runaway-app guard
+                    del self.kitty_kb[1:16]
+            elif kind == "<":                    # pop n entries
+                try:
+                    n = int(body or "1")
+                except ValueError:
+                    n = 1
+                for _ in range(max(1, n)):
+                    if len(self.kitty_kb) > 1:
+                        self.kitty_kb.pop()
+            elif kind == "=":                    # set flags on the current entry
+                try:
+                    parts = body.split(";")
+                    flags = int(parts[0] or "0") & 0b11111
+                    mode = int(parts[1]) if len(parts) > 1 and parts[1] else 1
+                except ValueError:
+                    flags, mode = 0, 1
+                if mode == 2:
+                    self.kitty_kb[-1] |= flags
+                elif mode == 3:
+                    self.kitty_kb[-1] &= ~flags
+                else:
+                    self.kitty_kb[-1] = flags
+            return ""
+
+        return KITTY_KB_RE.sub(_one, data)
+
     def _scan_alt(self, data):
         """Detects entering/leaving the alternate screen (?1049h/?1049l) to enable Claude mode automatically."""
         buf = self._scan_tail + data
@@ -1155,9 +1258,23 @@ class PtyBackend(QObject):
         bl = buf.rfind("\x1b[?2004l")
         if bh >= 0 or bl >= 0:
             self.bracketed_paste = bh > bl
+        # synchronized output (?2026h/l): while set the app is mid-frame, so
+        # repaints are held until the end-sync (see _flush_repaint) and a TUI
+        # frame is always painted whole instead of torn across two paints
+        sh = buf.rfind("\x1b[?2026h")
+        sl = buf.rfind("\x1b[?2026l")
+        if sh >= 0 or sl >= 0:
+            on = sh > sl
+            if on and not self.sync_output:
+                self._sync_since = time.time()
+            self.sync_output = on
         self._scan_tail = buf[-8:]
         if new != self.alt_screen:
             self.alt_screen = new
+            if not new:
+                # a TUI that crashed/exited without popping its kitty flags
+                # would leave the shell receiving CSI u keys - reset on exit
+                self.kitty_kb[:] = [0]
             self.alt_screen_changed.emit(new)
 
     def _scan_cwd(self, data):
@@ -1224,6 +1341,14 @@ class PtyBackend(QObject):
                         if cmd and cmd != self.running_cmd:
                             self.running_cmd = cmd
                             cmd_dirty = True
+                        if cmd and self.command_marks:
+                            # remember the command on its block for the
+                            # copy/re-run context-menu actions
+                            m = self.command_marks[-1]
+                            if len(m) > 2:
+                                m[2] = cmd
+                            else:
+                                m.append(cmd)
         if self.proc is None:
             return
         try:
@@ -1327,7 +1452,12 @@ class TerminalWidget(QWidget):
         # throttle the paint rate: coalesce Claude's fast bursts into one paint every ~16ms
         self._repaint_timer = QTimer(self)
         self._repaint_timer.setSingleShot(True)
-        self._repaint_timer.timeout.connect(self.update)
+        self._repaint_timer.timeout.connect(self._flush_repaint)
+        # dirty-row repaint state: the scrollback length at the last flush (a
+        # change means everything shifted -> full repaint) and the cursor row
+        # we last painted (a moving cursor must repaint its old row too)
+        self._last_paint_total = None
+        self._last_cursor_row = None
         # how long the last paint actually took (ms). On a weak PC a full-screen
         # shape/draw can cost tens of ms; we widen the throttle to match so we
         # never queue repaints faster than the machine can finish them.
@@ -1455,9 +1585,78 @@ class TerminalWidget(QWidget):
         self.update()
 
     def _toggle_blink(self):
-        if self.hasFocus():
-            self._blink = not self._blink
+        if not self.hasFocus():
+            return
+        self._blink = not self._blink
+        # a blink only changes the cursor: recomposite its row, not the pane
+        if self.scroll_offset == 0 and getattr(self, "backend", None) is not None:
+            try:
+                with self.backend.lock:
+                    cy = self.backend.screen.cursor.y
+                self.update(QRect(0, cy * self.ch - 2, self.width(), self.ch + 4))
+                return
+            except Exception:
+                pass
+        self.update()
+
+    def _flush_repaint(self):
+        """Repaint only the rows that changed since the last flush.
+
+        pyte records every live-screen row it touches in screen.dirty. When the
+        view didn't scroll and no overlay spans the pane, updating just those
+        row rects (plus the cursor's old/new rows) means a keystroke at the
+        prompt recomposites one line instead of re-shaping the whole screen.
+        Any case where the row->pixel mapping could have shifted falls back to
+        a full update - the fast path only covers the common typing-at-a-prompt
+        case, correctness everywhere else comes first."""
+        be = getattr(self, "backend", None)
+        if be is None:
             self.update()
+            return
+        # synchronized output (DECSET 2026): the app is mid-frame - hold this
+        # flush until the end-sync arrives so the frame paints whole. The
+        # timeout unsticks us if an app dies without sending the end-sync.
+        if be.sync_output:
+            if time.time() - be._sync_since < 0.15:
+                self._repaint_timer.start(8)
+                return
+            be.sync_output = False
+        try:
+            with be.lock:
+                screen = be.screen
+                total = len(screen.history.top) + screen.lines
+                dirty = set(screen.dirty)
+                screen.dirty.clear()
+                cur_y = screen.cursor.y
+                live_rows = screen.lines
+        except Exception:
+            self.update()
+            return
+        last_total, self._last_paint_total = self._last_paint_total, total
+        prev_cur, self._last_cursor_row = self._last_cursor_row, cur_y
+        full = (
+            self.scroll_offset != 0            # scrolled: rows map elsewhere
+            or last_total is None
+            or total != last_total             # scrollback grew: all rows shifted
+            or live_rows != self.rows          # mid-resize mismatch
+            or self.claude_mode                # TUI grid engine repaints wholesale
+            or self.copy_mode                  # overlays span the pane
+            or self.sel_anchor is not None
+            or bool(self.search_matches)
+            or not self._first_output          # "starting..." hint still visible
+            or len(dirty) >= (self.rows * 3) // 4
+        )
+        if full:
+            self.update()
+            return
+        dirty.add(cur_y)
+        if prev_cur is not None:
+            dirty.add(prev_cur)
+        w = self.width()
+        for y in dirty:
+            if 0 <= y < self.rows:
+                # 2px margin: Arabic diacritics can overhang the cell box
+                self.update(QRect(0, y * self.ch - 2, w, self.ch + 4))
 
     # ---------- backend signals ----------
     def _on_data(self):
@@ -1578,7 +1777,7 @@ class TerminalWidget(QWidget):
         p = QPainter(self)
         _t0 = time.perf_counter()
         try:
-            self._paint(p)
+            self._paint(p, event.rect())
         except Exception:
             import traceback
             try:
@@ -1637,8 +1836,10 @@ class TerminalWidget(QWidget):
             out.append(screen.buffer[y])
         return out
 
-    def _paint(self, p):
-        p.fillRect(self.rect(), BASE_BG)
+    def _paint(self, p, clip=None):
+        if clip is None or clip.isNull():
+            clip = self.rect()
+        p.fillRect(clip, BASE_BG)
         # optional background image: drawn over the base fill at the chosen
         # opacity, so text (and ANSI cell backgrounds) stay on top and readable
         bgpm = _bg_image_scaled(self.width(), self.height())
@@ -1650,12 +1851,19 @@ class TerminalWidget(QWidget):
             p.setOpacity(1.0)
         p.setFont(self.font)
         p.setPen(BASE_FG)  # default color for Claude-mode lines (no formats)
-        self._row_layouts = {}
         # maps each drawn row's layout text-position -> its starting pyte column.
         # A wide char (emoji/CJK) is ONE position in the shaped layout but spans
         # TWO grid columns, so xToCursor/cursorToX (text positions) and pyte
         # columns diverge on any such line; this table bridges the two.
-        self._row_pos2col = {}
+        # Mouse mapping (_pos_to_cell) reads these for EVERY visible row, not
+        # just the ones this paint draws, so a partial (dirty-row) repaint must
+        # keep the entries of the rows it skips: partial paints only happen
+        # when nothing scrolled, so the kept entries are still valid, and
+        # _draw_row overwrites the ones inside the clip. Reset on full paints
+        # only, where every visible row is rebuilt anyway.
+        if clip.contains(self.rect()) or not hasattr(self, "_row_layouts"):
+            self._row_layouts = {}
+            self._row_pos2col = {}
 
         with self.backend.lock:
             screen = self.backend.screen
@@ -1667,7 +1875,15 @@ class TerminalWidget(QWidget):
             cur_hidden = screen.cursor.hidden
             ncols = screen.columns
 
+            # only shape/draw rows inside the repaint region (a dirty-row
+            # update passes a single-row clip; a full update passes the pane).
+            # The +/-2px matches the margin in _flush_repaint for overhanging
+            # diacritics, so a neighbour row that bleeds into the clip redraws.
+            clip_top, clip_bot = clip.top() - 2, clip.bottom() + 2
             for yi, row in enumerate(visible):
+                ry = yi * self.ch
+                if ry + self.ch < clip_top or ry > clip_bot:
+                    continue
                 if self.claude_mode:
                     self._draw_row_grid(p, yi, row, ncols)   # grid engine
                 else:
@@ -1726,7 +1942,7 @@ class TerminalWidget(QWidget):
             # command-block markers: a thin bar in the left gutter at each prompt
             # line (green = success, red = failure, grey = unknown/running)
             if self.backend.command_marks:
-                ec_by_line = {pl: ec for pl, ec in self.backend.command_marks}
+                ec_by_line = {m[0]: m[1] for m in self.backend.command_marks}
                 for yi in range(len(visible)):
                     ec = ec_by_line.get(start + yi, "none")
                     if ec == "none":
@@ -2180,7 +2396,13 @@ class TerminalWidget(QWidget):
         self.scroll_offset = 0
 
         seq = None
-        if key in (Qt.Key_Return, Qt.Key_Enter):
+        # kitty keyboard protocol: when the running app pushed the
+        # "disambiguate" flag, encode via CSI u so modern TUIs (neovim, helix)
+        # can tell Esc from alt-, ctrl+i from Tab, shift+enter from enter.
+        kb = getattr(self.backend, "kitty_kb", None)
+        if kb and (kb[-1] & 1):
+            seq = kitty_encode_key(key, ctrl, alt, shift)
+        if seq is None and key in (Qt.Key_Return, Qt.Key_Enter):
             seq = "\r"
             if not self.backend.alt_screen:
                 self._cmd_started = time.time()   # for long-command finish notifications
@@ -2281,15 +2503,67 @@ class TerminalWidget(QWidget):
                 return m.group(0)
         return None
 
+    def _file_at(self, pos):
+        """(path, line) of the existing file reference under the mouse, or None.
+
+        Matches compiler/pytest/grep-style references with an optional :line
+        suffix. Relative paths resolve against the shell's cwd (OSC 9;9), and
+        only paths that actually exist on disk become clickable."""
+        abs_line, col = self._pos_to_cell(pos)
+        with self.backend.lock:
+            screen = self.backend.screen
+            row = self._abs_line(screen, abs_line)
+            if row is None:
+                return None
+            ncols = screen.columns
+            text = "".join((row[c].data if row[c].data else " ") for c in range(ncols))
+        for m in FILEPATH_RE.finditer(text):
+            if not (m.start() <= col < m.end()):
+                continue
+            cand, ln = m.group(0), None
+            mm = re.match(r"^(.+?):(\d+)$", cand)
+            if mm:
+                cand, ln = mm.group(1), int(mm.group(2))
+            cand = os.path.expanduser(cand)
+            if not os.path.isabs(cand):
+                cand = os.path.join(self.backend.cwd or os.getcwd(), cand)
+            if os.path.isfile(cand):
+                return cand, ln
+        return None
+
+    def _open_in_editor(self, path, line=None):
+        """Open the file in this session's editor pane (Ctrl+click a path).
+
+        Reuses an existing editor pane unless it holds unsaved changes; splits
+        a new one beside this terminal otherwise."""
+        sess = self._session()
+        if sess is None:
+            return
+        ed = next((w for w in sess._all_panes()
+                   if isinstance(w, EditorWidget) and not w.edit.document().isModified()),
+                  None)
+        if ed is None:
+            ed = sess.split_pane(self, Qt.Horizontal, factory=EditorWidget)
+            if not isinstance(ed, EditorWidget):
+                return
+        ed.open_path(path)
+        if line:
+            ed.goto_line(line)
+        ed.setFocus()
+
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
-            if event.modifiers() & Qt.ControlModifier:   # Ctrl+click opens a link
+            if event.modifiers() & Qt.ControlModifier:   # Ctrl+click opens a link/file
                 url = self._url_at(event.position())
                 if url:
                     try:
                         webbrowser.open(url)
                     except Exception:
                         pass
+                    return
+                hit = self._file_at(event.position())
+                if hit is not None:                      # file path -> editor pane
+                    self._open_in_editor(*hit)
                     return
             self.setFocus()
             self.sel_anchor = self._pos_to_cell(event.position())
@@ -2300,8 +2574,10 @@ class TerminalWidget(QWidget):
         if event.buttons() & Qt.LeftButton and self.sel_anchor is not None:
             self.sel_point = self._pos_to_cell(event.position())
             self.update()
-        elif (event.modifiers() & Qt.ControlModifier) and self._url_at(event.position()):
-            self.setCursor(Qt.PointingHandCursor)   # hint a clickable link
+        elif (event.modifiers() & Qt.ControlModifier) and (
+                self._url_at(event.position())
+                or self._file_at(event.position()) is not None):
+            self.setCursor(Qt.PointingHandCursor)   # hint a clickable link/file
         else:
             self.unsetCursor()
 
@@ -2527,6 +2803,42 @@ class TerminalWidget(QWidget):
         off = total - self.rows // 2 - L
         self.scroll_offset = max(0, min(maxoff, off))
 
+    def _block_at(self, abs_line):
+        """The OSC 133 command block containing abs_line, as
+        (command_text, first_output_line, last_output_line), or None."""
+        marks = self.backend.command_marks
+        if not marks:
+            return None
+        with self.backend.lock:
+            total = len(self.backend.screen.history.top) + self.backend.screen.lines
+        best, nxt = None, total
+        for m in marks:                    # marks are appended in line order
+            if m[0] <= abs_line:
+                best = m
+            else:
+                nxt = m[0]
+                break
+        if best is None:
+            return None
+        cmd = best[2] if len(best) > 2 else ""
+        return cmd, best[0] + 1, min(nxt - 1, total - 1)
+
+    def _lines_text(self, lo, hi):
+        """Plain text of absolute lines lo..hi (leading/trailing blanks dropped)."""
+        out = []
+        with self.backend.lock:
+            screen = self.backend.screen
+            ncols = screen.columns
+            for L in range(lo, hi + 1):
+                row = self._abs_line(screen, L)
+                if row is not None:
+                    out.append(self._full_row_text(row, ncols).rstrip())
+        while out and not out[-1]:
+            out.pop()
+        while out and not out[0]:
+            out.pop(0)
+        return "\n".join(out)
+
     def _jump_command(self, direction):
         """Scroll to the previous (-1) or next (+1) command prompt (OSC 133 marks)."""
         marks = self.backend.command_marks
@@ -2536,7 +2848,7 @@ class TerminalWidget(QWidget):
             total = len(self.backend.screen.history.top) + self.backend.screen.lines
             maxoff = len(self.backend.screen.history.top)
         cur_top = max(0, total - self.rows - self.scroll_offset)
-        plines = sorted({pl for pl, _ in marks if 0 <= pl < total})
+        plines = sorted({m[0] for m in marks if 0 <= m[0] < total})
         target = None
         if direction < 0:
             for pl in plines:
@@ -2687,6 +2999,21 @@ class TerminalWidget(QWidget):
         win = self.window()
         sess = self._session()
         menu = QMenu(self)
+        # command-block actions (OSC 133): act on the block under the click
+        blk = None
+        act_copy_out = act_copy_cmd = act_rerun = None
+        if not self.backend.alt_screen and self.backend.command_marks:
+            abs_line, _ = self._pos_to_cell(event.pos())
+            blk = self._block_at(abs_line)
+        if blk is not None:
+            cmd, out_lo, out_hi = blk
+            act_copy_out = menu.addAction(i18n.t("menu.copy_output"))
+            act_copy_out.setEnabled(out_hi >= out_lo)
+            act_copy_cmd = menu.addAction(i18n.t("menu.copy_cmd"))
+            act_copy_cmd.setEnabled(bool(cmd))
+            act_rerun = menu.addAction(i18n.t("menu.rerun"))
+            act_rerun.setEnabled(bool(cmd) and self.backend.at_prompt)
+            menu.addSeparator()
         act_copy = menu.addAction(i18n.t("menu.copy"))
         act_copy.setEnabled(self._norm_sel() is not None)
         act_paste = menu.addAction(i18n.t("menu.paste"))
@@ -2713,7 +3040,15 @@ class TerminalWidget(QWidget):
         chosen = menu.exec(event.globalPos())
         if chosen is None:
             return
-        if chosen == act_copy:
+        if blk is not None and chosen is act_copy_out:
+            txt = self._lines_text(blk[1], blk[2])
+            if txt:
+                QApplication.clipboard().setText(txt)
+        elif blk is not None and chosen is act_copy_cmd:
+            QApplication.clipboard().setText(blk[0])
+        elif blk is not None and chosen is act_rerun:
+            self.backend.write(blk[0] + "\r")
+        elif chosen == act_copy:
             self._copy_selection()
         elif chosen == act_paste:
             self._paste_clipboard()
@@ -3762,6 +4097,14 @@ class EditorWidget(QWidget):
         if path:
             self.open_path(path)
 
+    def goto_line(self, n):
+        """Move the cursor to 1-based line n and center it in the view."""
+        block = self.edit.document().findBlockByNumber(max(0, int(n) - 1))
+        if not block.isValid():
+            return
+        self.edit.setTextCursor(QTextCursor(block))
+        self.edit.centerCursor()
+
     def open_path(self, path):
         try:
             with open(path, encoding="utf-8", errors="replace") as fh:
@@ -3966,6 +4309,7 @@ class SessionWidget(QWidget):
         half = max(split.width(), split.height()) // 2 or 100
         split.setSizes([half, half])
         new_w.setFocus()
+        return new_w
 
     def close_pane(self, pane):
         if len(self._all_panes()) <= 1:
