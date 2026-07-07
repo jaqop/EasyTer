@@ -247,7 +247,7 @@ def restore_command(command):
 
 
 _prof("before PySide6 import")
-from PySide6.QtCore import Qt, QObject, Signal, QRect, QPointF, QTimer
+from PySide6.QtCore import Qt, QObject, Signal, QRect, QPointF, QTimer, QProcess
 from PySide6.QtGui import (
     QFont, QFontMetrics, QFontMetricsF, QPainter, QColor, QKeyEvent, QPen,
     QTextLayout, QTextCharFormat, QTextOption, QFontDatabase, QSyntaxHighlighter,
@@ -1414,6 +1414,7 @@ class TerminalWidget(QWidget):
         self.sel_point = None
         self.copy_mode = False   # keyboard scrollback navigation/selection (vim/tmux style)
         self.copy_cursor = None  # [abs_line, col] of the keyboard cursor in copy mode
+        self.read_only = False   # pane guard: nothing typed/pasted reaches the shell
         self._paint_start = 0    # first absolute line shown in the last paint
 
         # Claude mode: reverses Claude's visual BiDi to logical. Enabled **automatically** when
@@ -1997,6 +1998,18 @@ class TerminalWidget(QWidget):
             p.setPen(QColor("#ffffff"))
             p.drawText(QRect(bx, 4, tw, bh), Qt.AlignCenter, label)
 
+        # read-only badge (top right, under the Claude badge when both show)
+        if self.read_only:
+            label = i18n.t("badge.read_only")
+            fm = QFontMetrics(self.font)
+            tw = fm.horizontalAdvance(label) + 10
+            bh = self.ch + 6
+            bx = self.width() - tw - 6
+            by = 4 + (bh + 4 if self.claude_mode else 0)
+            p.fillRect(QRect(bx, by, tw, bh), QColor(176, 118, 32))
+            p.setPen(QColor("#ffffff"))
+            p.drawText(QRect(bx, by, tw, bh), Qt.AlignCenter, label)
+
         # copy-mode badge (top left)
         if self.copy_mode:
             label = i18n.t("badge.copy_mode")
@@ -2394,6 +2407,12 @@ class TerminalWidget(QWidget):
             return
 
         self.scroll_offset = 0
+
+        # read-only pane: the app shortcuts above still work, but nothing
+        # reaches the shell (guards a pane running Claude or a long build
+        # from stray keystrokes)
+        if self.read_only:
+            return
 
         seq = None
         # kitty keyboard protocol: when the running app pushed the
@@ -2805,7 +2824,7 @@ class TerminalWidget(QWidget):
 
     def _block_at(self, abs_line):
         """The OSC 133 command block containing abs_line, as
-        (command_text, first_output_line, last_output_line), or None."""
+        (command_text, first_output_line, last_output_line, exit_code), or None."""
         marks = self.backend.command_marks
         if not marks:
             return None
@@ -2821,7 +2840,7 @@ class TerminalWidget(QWidget):
         if best is None:
             return None
         cmd = best[2] if len(best) > 2 else ""
-        return cmd, best[0] + 1, min(nxt - 1, total - 1)
+        return cmd, best[0] + 1, min(nxt - 1, total - 1), best[1]
 
     def _lines_text(self, lo, hi):
         """Plain text of absolute lines lo..hi (leading/trailing blanks dropped)."""
@@ -2838,6 +2857,65 @@ class TerminalWidget(QWidget):
         while out and not out[0]:
             out.pop(0)
         return "\n".join(out)
+
+    def _ask_claude_about(self, cmd, exit_code, output):
+        """Send a failed command + its output to `claude -p` and show the reply.
+
+        Uses the Claude Code CLI already on the user's machine, so EasyTer
+        needs no API key or AI dependency of its own. The dialog is non-modal
+        and streams the reply as it arrives; closing it kills the process."""
+        dlg = QDialog(self.window())
+        dlg.setWindowTitle(i18n.t("claude.explain_title"))
+        dlg.resize(720, 480)
+        v = QVBoxLayout(dlg)
+        view = QPlainTextEdit(dlg)
+        view.setReadOnly(True)
+        view.setPlainText(i18n.t("claude.thinking"))
+        v.addWidget(view, 1)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        btn_copy = QPushButton(i18n.t("menu.copy").split("\t")[0])
+        btn_copy.clicked.connect(lambda: QApplication.clipboard().setText(view.toPlainText()))
+        row.addWidget(btn_copy)
+        v.addLayout(row)
+
+        exe = shutil.which("claude")
+        if exe is None:
+            view.setPlainText(i18n.t("claude.not_found"))
+            dlg.show()
+            return
+        lang_note = (" Answer in Arabic." if i18n.current_language() == "ar" else "")
+        prompt = (
+            "A terminal command on Windows failed. Explain the error briefly "
+            "and suggest a concrete fix.%s\n\nCommand: %s\nExit code: %s\n"
+            "Output:\n%s" % (lang_note, cmd, exit_code, output[-8000:])
+        )
+        proc = QProcess(dlg)
+        # a .cmd shim (the normal npm install) can't be exec'd directly
+        if exe.lower().endswith((".cmd", ".bat")):
+            proc.setProgram("cmd")
+            proc.setArguments(["/c", exe, "-p"])
+        else:
+            proc.setProgram(exe)
+            proc.setArguments(["-p"])
+        chunks = []
+
+        def _read():
+            chunks.append(bytes(proc.readAllStandardOutput()).decode("utf-8", "replace"))
+            view.setPlainText("".join(chunks))
+
+        def _done(code, _status):
+            if not chunks:
+                err = bytes(proc.readAllStandardError()).decode("utf-8", "replace").strip()
+                view.setPlainText(err or i18n.t("claude.failed", code=code))
+
+        proc.readyReadStandardOutput.connect(_read)
+        proc.finished.connect(_done)
+        dlg.finished.connect(lambda *_: proc.kill())
+        proc.start()
+        proc.write(prompt.encode("utf-8"))
+        proc.closeWriteChannel()
+        dlg.show()
 
     def _jump_command(self, direction):
         """Scroll to the previous (-1) or next (+1) command prompt (OSC 133 marks)."""
@@ -2895,7 +2973,7 @@ class TerminalWidget(QWidget):
             event.ignore()
 
     def dropEvent(self, event):
-        if self._exited:
+        if self._exited or self.read_only:
             event.ignore()
             return
         md = event.mimeData()
@@ -2927,7 +3005,7 @@ class TerminalWidget(QWidget):
         """Paste the clipboard, with optional protection (confirm multi-line/large
         pastes) and bracketed-paste wrapping so the shell won't auto-run lines."""
         txt = QApplication.clipboard().text()
-        if not txt:
+        if not txt or self.read_only:
             return
         if SETTINGS.get("paste_protection", True) and ("\n" in txt.strip() or len(txt) > 2000):
             from PySide6.QtWidgets import QMessageBox
@@ -3005,14 +3083,17 @@ class TerminalWidget(QWidget):
         if not self.backend.alt_screen and self.backend.command_marks:
             abs_line, _ = self._pos_to_cell(event.pos())
             blk = self._block_at(abs_line)
+        act_ask = None
         if blk is not None:
-            cmd, out_lo, out_hi = blk
+            cmd, out_lo, out_hi, ec = blk
             act_copy_out = menu.addAction(i18n.t("menu.copy_output"))
             act_copy_out.setEnabled(out_hi >= out_lo)
             act_copy_cmd = menu.addAction(i18n.t("menu.copy_cmd"))
             act_copy_cmd.setEnabled(bool(cmd))
             act_rerun = menu.addAction(i18n.t("menu.rerun"))
             act_rerun.setEnabled(bool(cmd) and self.backend.at_prompt)
+            if cmd and ec not in (None, 0):   # the block's command failed
+                act_ask = menu.addAction(i18n.t("menu.ask_claude"))
             menu.addSeparator()
         act_copy = menu.addAction(i18n.t("menu.copy"))
         act_copy.setEnabled(self._norm_sel() is not None)
@@ -3021,6 +3102,9 @@ class TerminalWidget(QWidget):
         menu.addSeparator()
         act_claude = menu.addAction(
             i18n.t("claude.toggle_off") if self.claude_mode else i18n.t("claude.toggle_on"))
+        act_ro = menu.addAction(i18n.t("menu.read_only"))
+        act_ro.setCheckable(True)
+        act_ro.setChecked(self.read_only)
         menu.addSeparator()
         # switch shell (restarts this pane)
         shell_menu = menu.addMenu(i18n.t("menu.shell"))
@@ -3048,6 +3132,11 @@ class TerminalWidget(QWidget):
             QApplication.clipboard().setText(blk[0])
         elif blk is not None and chosen is act_rerun:
             self.backend.write(blk[0] + "\r")
+        elif blk is not None and chosen is act_ask:
+            self._ask_claude_about(blk[0], blk[3], self._lines_text(blk[1], blk[2]))
+        elif chosen == act_ro:
+            self.read_only = not self.read_only
+            self.update()
         elif chosen == act_copy:
             self._copy_selection()
         elif chosen == act_paste:
