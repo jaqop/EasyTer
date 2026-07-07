@@ -60,7 +60,7 @@ The insight behind EasyTer is that a terminal line isn't really a bag of indepen
 
 Concretely, it renders every line through Qt's **`QTextLayout`**, which internally runs:
 
-1. **HarfBuzz shaping** — resolves each letter to its correct contextual glyph and joins them.
+1. **Shaping** (via Qt's bundled HarfBuzz) — resolves each letter to its correct contextual glyph and joins them.
 2. **Unicode BiDi (UAX #9)** — reorders mixed LTR/RTL runs into correct visual order.
 
 That's the same combination Linux terminals hand-roll — except QTextLayout gives it to you as a battle-tested library instead of thousands of lines of custom code.
@@ -97,7 +97,7 @@ EasyTer's answer is context-sensitive. It only auto-enables its full-screen BiDi
 
 ## It's not just Arabic
 
-The same shaping-plus-BiDi pipeline handles every connected right-to-left script. EasyTer also renders:
+The same shaping-plus-BiDi pipeline handles every language written in the Arabic script. EasyTer also renders:
 
 - **Persian** (فارسی)
 - **Urdu** (اردو)
@@ -113,4 +113,4 @@ EasyTer is free, open source (MIT), Windows-only, and has no telemetry. There's 
 
 If you write code in Arabic, Persian, Urdu, or Pashto — or you just find text rendering internals interesting — I'd love your feedback and issues. And if this saved you from copy-pasting Arabic into a text editor to read your own terminal output, a ⭐ on the repo genuinely helps.
 
-*Built with PySide6 (QTextLayout / HarfBuzz), pywinpty (ConPTY), and pyte.*
+*Built with PySide6 (QTextLayout, on Qt's bundled HarfBuzz shaper), pywinpty (ConPTY), and pyte.*
