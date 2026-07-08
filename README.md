@@ -63,6 +63,14 @@ WSL, Claude Code, vim, …).
   programs (`git diff` in `less`, `vim`, `man`, `htop`) keep correct native BiDi
   instead of being reshaped — which previously shredded their Arabic. `F2` still
   toggles it manually for any tool that pre-reverses Arabic.
+- **Standard BiDi escapes** ([terminal-wg recommendation](https://terminal-wg.pages.freedesktop.org/bidi/)) —
+  any app can declare its BiDi contract instead of relying on the Claude
+  heuristic: `CSI 8 l` (BDSM explicit: "my output is already in visual order",
+  enables the same visual→logical engine), `CSI 8 h` to return to implicit
+  (default: the terminal does the BiDi), and `CSI 1 SP k` / `CSI 2 SP k` /
+  `CSI 0 SP k` (SCP) to force the paragraph direction to LTR / RTL / autodetect.
+  Modes reset when the app leaves the alternate screen or the shell prompt
+  returns, so a crashed app can't leave the terminal in the wrong mode.
 - Bilingual UI: **English (default)** and Arabic. Local-first, **no telemetry**.
 
 ## Quick start — no Python, no Git, one file
