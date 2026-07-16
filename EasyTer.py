@@ -1464,10 +1464,12 @@ class TerminalWidget(QWidget):
         if sess and hasattr(w, "set_tab_title"):
             w.set_tab_title(sess, title)
 
-    # Guaranteed-monospaced fallback chain. Consolas and Courier New ship with
-    # every Windows install, so the primary face is always fixed-pitch even on a
-    # machine with none of the nicer mono fonts.
-    _MONO_FALLBACK = ["JetBrains Mono", "Cascadia Mono", "Consolas", "Courier New"]
+    # Guaranteed-monospaced fallback chain. Consolas ships with every Windows
+    # install, so the primary face is always fixed-pitch even on a machine with
+    # none of the nicer mono fonts. Courier New is deliberately NOT in this list:
+    # it carries (crude) Arabic glyphs, so listed before the bundled Arabic faces
+    # it would hijack Arabic runs and degrade the app's core feature.
+    _MONO_FALLBACK = ["JetBrains Mono", "Cascadia Mono", "Consolas"]
     # Arabic faces are loaded for glyph coverage but are PROPORTIONAL — they may
     # only ever be a trailing fallback (shaped Arabic runs render fine), never the
     # primary face, or the whole cell grid collapses (box-drawing and TUIs like
@@ -1674,35 +1676,6 @@ class TerminalWidget(QWidget):
                 self._paint_n = 0
                 self._paint_sum_ms = 0.0
                 self._paint_max_ms = 0.0
-
-    @staticmethod
-    def _abs_line(screen, idx):
-        """One line by absolute index (history then live), without copying history."""
-        htop = screen.history.top
-        hlen = len(htop)
-        if idx < 0 or idx >= hlen + screen.lines:
-            return None
-        if idx < hlen:
-            return htop[idx]          # deque indexing is O(distance from nearest end)
-        return screen.buffer[idx - hlen]
-
-    @staticmethod
-    def _line_window(screen, start, count):
-        """The `count` lines starting at absolute `start`, across history+live.
-
-        Only touches the lines actually needed instead of materializing the whole
-        scrollback every frame: when not scrolled up the window is entirely in the
-        live buffer and history is never walked."""
-        htop = screen.history.top
-        hlen = len(htop)
-        total = hlen + screen.lines
-        end = min(total, start + count)
-        out = []
-        if start < hlen:
-            out.extend(itertools.islice(htop, start, min(end, hlen)))
-        for y in range(max(start, hlen) - hlen, max(0, end - hlen)):
-            out.append(screen.buffer[y])
-        return out
 
     @staticmethod
     def _abs_line(screen, idx):
