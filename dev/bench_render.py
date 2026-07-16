@@ -23,7 +23,7 @@ except Exception as e:                       # GUI deps missing - nothing to do
     print("PySide6 not available, skipping benchmark:", e)
     sys.exit(0)
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # repo root (parent of dev/)
 app = QApplication(sys.argv)
 import EasyTer
 EasyTer._ensure_arabic_font()

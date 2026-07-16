@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EasyTer — the Windows terminal that renders Arabic correctly</title>
+<meta name="description" content="EasyTer is a free Windows terminal that renders connected (shaped) Arabic — plus Persian, Urdu, and Pashto — correctly, using HarfBuzz shaping and the Unicode BiDi algorithm. Tabs, split panes, themes, an editor, and a Python plugin API.">
+<meta property="og:title" content="EasyTer — the terminal that renders Arabic correctly">
+<meta property="og:description" content="Connected, shaped, right-to-left Arabic in a real Windows terminal. Free and open source.">
+<meta property="og:image" content="screenshot-arabic.png">
+<meta property="og:type" content="website">
+<link rel="icon" href="../icon.png">
+<style>
+  :root{
+    --bg:#0d1117; --bg2:#161b22; --card:#161b22; --border:#232b36;
+    --fg:#e6edf3; --muted:#9aa7b4; --accent:#0acf83; --accent2:#2f81f7;
+    --danger:#f77; --maxw:1080px;
+    --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--sans);line-height:1.6;
+    -webkit-font-smoothing:antialiased}
+  a{color:var(--accent);text-decoration:none}
+  a:hover{text-decoration:underline}
+  .wrap{max-width:var(--maxw);margin:0 auto;padding:0 24px}
+  .nav{display:flex;align-items:center;justify-content:space-between;padding:20px 24px;max-width:var(--maxw);margin:0 auto}
+  .brand{display:flex;align-items:center;gap:10px;font-weight:700;font-size:19px}
+  .brand img{width:28px;height:28px}
+  .nav-links{display:flex;gap:22px;align-items:center}
+  .nav-links a{color:var(--muted);font-size:15px}
+  .btn{display:inline-block;background:var(--accent);color:#062015;font-weight:700;
+    padding:13px 22px;border-radius:9px;font-size:16px;border:0;cursor:pointer;transition:transform .06s ease, filter .15s ease}
+  .btn:hover{filter:brightness(1.07);text-decoration:none;transform:translateY(-1px)}
+  .btn.ghost{background:transparent;color:var(--fg);border:1px solid var(--border)}
+  .btn.sm{padding:9px 16px;font-size:14px}
+
+  /* Hero */
+  .hero{text-align:center;padding:64px 0 40px}
+  .eyebrow{display:inline-block;font-family:var(--mono);font-size:13px;color:var(--accent);
+    border:1px solid var(--border);border-radius:999px;padding:5px 14px;background:var(--bg2);margin-bottom:22px}
+  h1{font-size:clamp(34px,6vw,60px);line-height:1.05;margin:.1em 0 .35em;letter-spacing:-.02em}
+  h1 .hl{color:var(--accent)}
+  .sub{font-size:clamp(17px,2.5vw,21px);color:var(--muted);max-width:720px;margin:0 auto 30px}
+  .cta{display:flex;gap:14px;justify-content:center;flex-wrap:wrap;align-items:center}
+  .cta .note{color:var(--muted);font-size:14px;width:100%;margin-top:12px}
+  .badges{margin-top:22px;display:flex;gap:8px;justify-content:center;flex-wrap:wrap;opacity:.9}
+  .badges img{height:20px}
+
+  /* The proof: before/after */
+  section{padding:56px 0}
+  h2{font-size:clamp(26px,4vw,38px);letter-spacing:-.02em;margin:0 0 10px;text-align:center}
+  .lead{color:var(--muted);text-align:center;max-width:680px;margin:0 auto 40px;font-size:17px}
+  .compare{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+  .compare .col{background:var(--card);border:1px solid var(--border);border-radius:14px;overflow:hidden}
+  .compare .head{padding:12px 16px;font-family:var(--mono);font-size:13px;display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--border)}
+  .dot{width:9px;height:9px;border-radius:50%}
+  .bad .dot{background:var(--danger)} .good .dot{background:var(--accent)}
+  .term{padding:22px 20px;font-family:var(--mono);font-size:26px;background:#0a0e14;min-height:120px;display:flex;align-items:center}
+  /* "broken" = disconnected isolated forms, reversed order (illustrative) */
+  .broken{color:#c9d1d9;direction:ltr;letter-spacing:6px;unicode-bidi:bidi-override}
+  .fixed{color:#e6edf3;direction:rtl;unicode-bidi:plaintext}
+  .cap{padding:10px 16px;color:var(--muted);font-size:13px;border-top:1px solid var(--border)}
+
+  .shot{margin:34px auto 0;max-width:920px;border:1px solid var(--border);border-radius:14px;overflow:hidden;background:var(--card)}
+  .shot img{display:block;width:100%;height:auto}
+  .shot .cap{text-align:center}
+
+  /* Features */
+  .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}
+  .feat{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:22px}
+  .feat h3{margin:0 0 6px;font-size:17px}
+  .feat p{margin:0;color:var(--muted);font-size:15px}
+  .feat .ic{font-size:22px;margin-bottom:10px}
+
+  /* Languages strip */
+  .langs{background:var(--bg2);border:1px solid var(--border);border-radius:16px;padding:32px;text-align:center}
+  .langrow{display:flex;gap:26px;justify-content:center;flex-wrap:wrap;font-size:30px;margin-top:16px;direction:rtl;font-family:var(--mono)}
+  .langrow span{color:var(--fg)}
+  .langrow small{display:block;font-family:var(--sans);font-size:13px;color:var(--muted);direction:ltr}
+
+  /* Install */
+  .code{background:#0a0e14;border:1px solid var(--border);border-radius:12px;padding:18px 20px;
+    font-family:var(--mono);font-size:14px;color:#c9d1d9;overflow-x:auto;white-space:pre}
+  .code .c{color:var(--muted)} .code .g{color:var(--accent)}
+
+  footer{border-top:1px solid var(--border);padding:36px 0;color:var(--muted);font-size:14px;text-align:center}
+  .center{text-align:center}
+  @media(max-width:760px){
+    .compare,.grid{grid-template-columns:1fr}
+    .nav-links{display:none}
+    .term{font-size:22px}
+  }
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <div class="brand"><img src="../icon.png" alt="EasyTer icon">EasyTer</div>
+  <div class="nav-links">
+    <a href="#proof">The problem</a>
+    <a href="#features">Features</a>
+    <a href="#languages">Languages</a>
+    <a href="#install">Install</a>
+    <a href="https://github.com/jaqop/EasyTer">GitHub</a>
+    <a class="btn sm" href="https://github.com/jaqop/EasyTer/releases/latest">Download</a>
+  </div>
+</nav>
+
+<header class="hero wrap">
+  <span class="eyebrow">Free &amp; open source · Windows 10/11</span>
+  <h1>The terminal that renders<br><span class="hl">Arabic correctly.</span></h1>
+  <p class="sub">Every other Windows terminal breaks connected Arabic — letters disconnect and the order reverses. EasyTer renders every line through HarfBuzz shaping and the Unicode BiDi algorithm, so Arabic (and Persian, Urdu, and Pashto) come out joined, shaped, and in the right order — even inside <code>vim</code>, <code>git</code>, and Claude Code.</p>
+  <div class="cta">
+    <a class="btn" href="https://github.com/jaqop/EasyTer/releases/latest">⬇ Download EasyTer.exe</a>
+    <a class="btn ghost" href="https://github.com/jaqop/EasyTer">View source on GitHub</a>
+    <div class="note">One standalone <code>.exe</code> (~40 MB). No Python, no setup — download and double-click.</div>
+  </div>
+  <div class="badges">
+    <img src="https://img.shields.io/github/v/release/jaqop/EasyTer?label=release&color=0acf83" alt="release">
+    <img src="https://img.shields.io/badge/OS-Windows-lightgrey" alt="Windows">
+    <img src="https://img.shields.io/badge/License-MIT-yellow" alt="MIT">
+    <img src="https://img.shields.io/badge/telemetry-none-0acf83" alt="no telemetry">
+  </div>
+</header>
+
+<section id="proof" class="wrap">
+  <h2>See the difference</h2>
+  <p class="lead">The same three Arabic words, typed into a terminal. On the left is what mainstream terminals show. On the right is EasyTer.</p>
+  <div class="compare">
+    <div class="col bad">
+      <div class="head"><span class="dot"></span> Windows Terminal / others</div>
+      <div class="term"><span class="broken">ﻡ ﻼ ﺱ ﻝ ﺍ</span></div>
+      <div class="cap">Letters isolated, not joined — and the reading order is reversed. Unreadable.</div>
+    </div>
+    <div class="col good">
+      <div class="head"><span class="dot"></span> EasyTer</div>
+      <div class="term"><span class="fixed">السلام عليكم</span></div>
+      <div class="cap">Connected, shaped, right-to-left — exactly as Arabic should read.</div>
+    </div>
+  </div>
+
+  <div class="shot">
+    <img src="screenshot-arabic.png" alt="EasyTer rendering connected Arabic in a real terminal session">
+    <div class="cap">Connected, shaped Arabic in a real interactive session — correct joining, diacritics, and Arabic-Indic numbers.</div>
+  </div>
+</section>
+
+<section id="features" class="wrap">
+  <h2>A real terminal, not a demo</h2>
+  <p class="lead">EasyTer runs a real pseudo-console (pywinpty / ConPTY) on a VT screen emulator, so every interactive program just works — with correct Arabic on top.</p>
+  <div class="grid">
+    <div class="feat"><div class="ic">🔤</div><h3>Correct shaping &amp; BiDi</h3><p>HarfBuzz shaping + Unicode UAX&nbsp;#9 via Qt's QTextLayout — the engine Linux terminals hand-roll.</p></div>
+    <div class="feat"><div class="ic">🪟</div><h3>Tabs &amp; split panes</h3><p>Side-by-side and stacked splits, draggable dividers, pane zoom, broadcast input, reopen last tab.</p></div>
+    <div class="feat"><div class="ic">🎨</div><h3>15+ themes</h3><p>Dracula, Nord, Tokyo Night, Catppuccin, Gruvbox… full UI theming, opacity, background image.</p></div>
+    <div class="feat"><div class="ic">📝</div><h3>Built-in editor</h3><p>Syntax highlighting and line numbers, handling large files — with correct Arabic there too.</p></div>
+    <div class="feat"><div class="ic">🔍</div><h3>Logical-order search</h3><p><code>Ctrl+F</code> searches the logical text, so Arabic matches the way you actually typed it.</p></div>
+    <div class="feat"><div class="ic">🐍</div><h3>Python plugin API</h3><p>Keybindings, commands, themes, event hooks, and status segments — scriptable from <code>~/.easyter</code>.</p></div>
+    <div class="feat"><div class="ic">⚡</div><h3>Quake-style hotkey</h3><p><code>Ctrl+Alt+`</code> summons or hides EasyTer from anywhere — instant drop-down terminal.</p></div>
+    <div class="feat"><div class="ic">🐚</div><h3>Any shell</h3><p>Auto-detects PowerShell, cmd, Git Bash, and WSL. Session save/restore, clickable links, OSC 52 clipboard.</p></div>
+    <div class="feat"><div class="ic">🔒</div><h3>Local-first, no telemetry</h3><p>Everything stays on your machine. Free and open source under the MIT license.</p></div>
+  </div>
+</section>
+
+<section id="languages" class="wrap">
+  <div class="langs">
+    <h2>Not just Arabic</h2>
+    <p class="lead" style="margin-bottom:0">The same shaping engine handles every connected right-to-left script. If you write any of these, no Windows terminal renders them correctly — until now.</p>
+    <div class="langrow">
+      <span>العربية<small>Arabic</small></span>
+      <span>فارسی<small>Persian</small></span>
+      <span>اردو<small>Urdu</small></span>
+      <span>پښتو<small>Pashto</small></span>
+    </div>
+  </div>
+</section>
+
+<section id="install" class="wrap">
+  <h2>Get started in one click</h2>
+  <p class="lead">No Python, no pip, no PATH setup. Your settings live in <code>~\.easyter\</code>, so the exe can run from anywhere — Desktop, USB stick, a tools folder.</p>
+  <div class="center" style="margin-bottom:30px">
+    <a class="btn" href="https://github.com/jaqop/EasyTer/releases/latest">⬇ Download the latest EasyTer.exe</a>
+  </div>
+  <p class="lead" style="margin-bottom:14px">Prefer to run from source? Python 3.10–3.14:</p>
+  <div class="code"><span class="c"># clone and run</span>
+git clone https://github.com/jaqop/EasyTer.git
+cd EasyTer
+pip install -r requirements.txt
+<span class="g">pythonw</span> EasyTer.py</div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <p><strong>EasyTer</strong> · MIT licensed · Built with PySide6, pywinpty, and pyte.</p>
+    <p><a href="https://github.com/jaqop/EasyTer">GitHub</a> · <a href="https://github.com/jaqop/EasyTer/releases/latest">Download</a> · <a href="https://github.com/jaqop/EasyTer/issues">Report an issue</a></p>
+  </div>
+</footer>
+
+</body>
+</html>

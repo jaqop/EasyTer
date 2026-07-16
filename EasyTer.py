@@ -13,6 +13,7 @@ Run with:  pythonw EasyTer.py   (or EasyTer.vbs / run.bat)
 
 import ctypes
 import ctypes.wintypes
+from collections import OrderedDict
 import glob
 import itertools
 import json
@@ -108,6 +109,15 @@ from winpty import PtyProcess
 from wcwidth import wcwidth as _wcwidth_raw
 
 
+def _lru_put(cache, key, value, cap):
+    """Insert into an OrderedDict-backed cache, evicting the least-recently-used
+    entry when over `cap`. Evicts one at a time (not a full .clear()) so the hot
+    working set survives, avoiding a re-shape stall when the cap is reached."""
+    cache[key] = value
+    if len(cache) > cap:
+        cache.popitem(last=False)   # drop the oldest (LRU)
+
+
 def _char_width(d):
     """Display width of a terminal cell, robust to multi-codepoint cell data.
 
@@ -140,6 +150,10 @@ OSC99_RE = re.compile(r'\x1b\]9;9;"?([^"\x07\x1b]+)"?(?:\x07|\x1b\\)')
 OSC7_RE = re.compile(r"\x1b\]7;file://[^/]*(/[^\x07\x1b]*)(?:\x07|\x1b\\)")
 # OSC 52: a program sets the system clipboard (e.g. yank in vim over SSH). Write-only.
 OSC52_RE = re.compile(r"\x1b\]52;[cpqs0-7]*;([A-Za-z0-9+/=]+)(?:\x07|\x1b\\)")
+# OSC 6969 (EasyTer-private): the shell's `edit <file>` command asks EasyTer to
+# open a path in the embedded editor pane. pyte discards the unknown OSC, so it
+# never shows as garbage; we scan the raw stream for it, like the OSCs above.
+OSC_EDIT_RE = re.compile(r"\x1b\]6969;([^\x07\x1b]+)(?:\x07|\x1b\\)")
 # PowerShell shell-integration: wrap the existing prompt (oh-my-posh-safe) to emit
 # OSC 133 markers so command blocks work. Runs once, after the profile loads.
 PS_SHELL_INTEGRATION = (
@@ -172,6 +186,16 @@ PS_SHELL_INTEGRATION = (
     "$s=if($PSVersionTable.PSEdition -eq 'Core'){'pwsh'}else{'powershell'};"
     "& {oh-my-posh init $s --config $cfg|Invoke-Expression} 2>$null;"
     "$ErrorActionPreference='Continue';__et_wrap};"
+    # `edit <file>`: open a path in EasyTer's editor pane. Resolves the argument
+    # to an absolute path relative to the current directory (works for a file
+    # that doesn't exist yet too), then emits OSC 6969 for EasyTer to intercept.
+    # Remaining args are joined so an unquoted path with spaces still works.
+    "function global:edit{param([Parameter(ValueFromRemainingArguments=$true)][string[]]$a);"
+    "if(-not $a){[Console]::Error.WriteLine('usage: edit <file>');return};"
+    "$p=$a -join ' ';"
+    "try{$full=$ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($p)}"
+    "catch{$full=$p};"
+    "[Console]::Write([char]27+']6969;'+$full+[char]7)};"
     # Bind F5 (no default PSReadLine action) to redraw the prompt in place. EasyTer
     # sends this silently after a resize so oh-my-posh's right-aligned segment
     # repositions to the new width without the user pressing Enter.
@@ -194,8 +218,13 @@ def available_shells():
     if shutil.which("pwsh"):
         shells.append(("PowerShell 7", "pwsh.exe"))
     shells.append(("Command Prompt", "cmd.exe"))
-    for p in (r"C:\Program Files\Git\bin\bash.exe",
-              r"C:\Program Files\Git\usr\bin\bash.exe"):
+    # Prefer the REAL shell in usr\bin: bin\bash.exe is only a launcher stub that
+    # re-execs bash in a way that detaches from the ConPTY pipe, so no prompt shows
+    # and no input reaches it ("can't type at all"). usr\bin\bash.exe is interactive.
+    for p in (r"C:\Program Files\Git\usr\bin\bash.exe",
+              r"C:\Program Files (x86)\Git\usr\bin\bash.exe",
+              r"C:\Program Files\Git\bin\bash.exe",          # launcher stub — last resort
+              r"C:\Program Files (x86)\Git\bin\bash.exe"):
         if os.path.exists(p):
             shells.append(("Git Bash", p))
             break
@@ -226,7 +255,20 @@ BASE_BG = QColor("#0d1117")
 BASE_FG = QColor("#e6edf3")
 
 # ---- Settings (saved/loaded from a file next to the program) ----
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+# Frozen (PyInstaller) support: bundled read-only assets (fonts/, icon.ico) are
+# unpacked to sys._MEIPASS, which vanishes on exit — so config/session/logs must
+# go somewhere persistent instead. ~/.easyter is already EasyTer's home for
+# plugins, so reuse it. From source, both stay next to EasyTer.py as before.
+_FROZEN = bool(getattr(sys, "frozen", False))
+RESOURCE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+if _FROZEN:
+    SCRIPT_DIR = os.path.join(os.path.expanduser("~"), ".easyter")
+    try:
+        os.makedirs(SCRIPT_DIR, exist_ok=True)
+    except Exception:
+        SCRIPT_DIR = os.path.dirname(os.path.abspath(sys.executable))
+else:
+    SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(SCRIPT_DIR, "easyter_config.json")
 SESSION_PATH = os.path.join(SCRIPT_DIR, "easyter_session.json")
 SETTINGS = {
@@ -507,7 +549,7 @@ def _ensure_arabic_font():
     # Arabic works from a fresh clone), then fall back to the user's ~/.wezterm-fonts.
     for fn in ("Amiri-Regular.ttf", "Amiri-Bold.ttf",
                "Vazirmatn.ttf", "NotoNaskhArabic.ttf"):
-        for base in (os.path.join(SCRIPT_DIR, "fonts"),
+        for base in (os.path.join(RESOURCE_DIR, "fonts"),
                      os.path.join(os.path.expanduser("~"), ".wezterm-fonts")):
             path = os.path.join(base, fn)
             if os.path.exists(path):
@@ -675,16 +717,54 @@ def reverse_arabic_runs(line):
     return "".join(out)
 
 
-def restore_bidi_line(text):
+def restore_bidi_line(text, base_rtl=None):
     """Convert Claude's visual line to logical based on its base direction. None = no change.
     - RTL base (Arabic-dominant): reverse the whole line (with LTR islands).
     - LTR base with Arabic: reverse only the Arabic runs in place.
-    - pure English: no change."""
-    if line_is_rtl_visual(text):
+    - pure English: no change.
+    base_rtl overrides per-line autodetection when the application declared its
+    paragraph direction via SCP (see scan_bidi_modes): True = RTL, False = LTR,
+    None = autodetect from the line's content."""
+    if base_rtl is None:
+        base_rtl = line_is_rtl_visual(text)
+    if base_rtl:
         return unbidi_rtl_line(text)
     if _has_arabic(text):
         return reverse_arabic_runs(text)
     return None
+
+
+# ── terminal-wg BiDi escape sequences (freedesktop recommendation) ──
+# BDSM (ECMA-48 mode 8) declares who does the BiDi reordering:
+#   CSI 8 h  implicit — app sends LOGICAL order, terminal reorders (our default)
+#   CSI 8 l  explicit — app already reordered, it sends VISUAL order
+# Explicit mode is exactly what Claude Code (Ink) does on Windows, so it drives
+# the same visual->logical grid engine that cmd_is_claude() enables by name.
+# SCP (CSI Pn SP k) declares the paragraph base direction:
+#   0/omitted = terminal default (autodetect), 1 = LTR, 2 = RTL.
+# Like the ?1049/?2004 scans, we match the canonical single-parameter forms.
+_BDSM_IMPLICIT = "\x1b[8h"
+_BDSM_EXPLICIT = "\x1b[8l"
+_SCP_SEQS = (("\x1b[ k", None), ("\x1b[0 k", None),
+             ("\x1b[1 k", False), ("\x1b[2 k", True))
+
+
+def scan_bidi_modes(data, explicit, base_rtl):
+    """Scan an output chunk for BDSM/SCP and return the updated
+    (explicit, base_rtl, last_pos) — the last occurrence of each wins.
+    last_pos is the offset of the latest BDSM/SCP match (-1 if none), so the
+    caller can tell whether a reset marker (prompt, alt-screen exit) came
+    after the app declared its modes."""
+    ih = data.rfind(_BDSM_IMPLICIT)
+    il = data.rfind(_BDSM_EXPLICIT)
+    if ih >= 0 or il >= 0:
+        explicit = il > ih
+    best = -1
+    for seq, val in _SCP_SEQS:
+        p = data.rfind(seq)
+        if p > best:
+            best, base_rtl = p, val
+    return explicit, base_rtl, max(ih, il, best)
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -900,6 +980,8 @@ class PtyBackend(QObject):
     clipboard_set = Signal(str)        # a program set the clipboard via OSC 52
     cwd_changed = Signal(str)          # working directory changed (for dynamic tab titles)
     cmd_changed = Signal()             # the running command started/ended (for the tab tooltip)
+    edit_file = Signal(str)            # `edit <file>` in the shell (OSC 6969); arg = absolute path
+    bidi_changed = Signal()            # BDSM/SCP state changed (terminal-wg BiDi escapes)
 
     def __init__(self, cols, rows, command="powershell.exe", start_cwd=None):
         super().__init__()
@@ -912,6 +994,8 @@ class PtyBackend(QObject):
         self.alt_screen = False     # is a full-screen TUI program active now?
         self.at_prompt = False      # idle at an interactive prompt (OSC 133 B, no command running)
         self.bracketed_paste = False  # does the program want bracketed paste (?2004h)?
+        self.bidi_explicit = False  # BDSM: app sends visual-order text (CSI 8 l)
+        self.bidi_base_rtl = None   # SCP: declared paragraph direction (None=autodetect)
         self.cwd = None             # current working directory (from OSC 9;9 / OSC 7)
         self.running_cmd = ""       # the command line currently executing ("" = idle at prompt)
         self._prompt_col = None     # screen column where the prompt ends / input begins (OSC 133 B)
@@ -998,6 +1082,7 @@ class PtyBackend(QObject):
                 self._scan_alt(data)                 # detect the alternate screen (on the raw data)
                 self._scan_cwd(data)                 # track the working directory
                 self._scan_osc52(data)               # programs setting the clipboard
+                self._scan_edit(data)                # `edit <file>` -> open in the editor pane
                 data = self._carry + data
                 data = KITTY_KB_RE.sub("", data)      # strip the stray 'u'
                 # carry any incomplete sequence at the end of the chunk to the next read (avoid splitting)
@@ -1088,7 +1173,18 @@ class PtyBackend(QObject):
         bl = buf.rfind("\x1b[?2004l")
         if bh >= 0 or bl >= 0:
             self.bracketed_paste = bh > bl
+        # terminal-wg BiDi escapes (BDSM/SCP): an app can declare visual-order
+        # output instead of relying on the Claude process-name heuristic
+        ex, base, seq_pos = scan_bidi_modes(buf, self.bidi_explicit, self.bidi_base_rtl)
+        # the app is gone (shell prompt back, or alt screen left) AFTER its last
+        # BiDi declaration: its modes no longer apply. Apps should restore on
+        # exit, but a crash never does — don't let a stale flag mangle the next.
+        if max(buf.rfind("\x1b]133;A"), il) > seq_pos:
+            ex, base = False, None
         self._scan_tail = buf[-8:]
+        if (ex, base) != (self.bidi_explicit, self.bidi_base_rtl):
+            self.bidi_explicit, self.bidi_base_rtl = ex, base
+            self.bidi_changed.emit()
         if new != self.alt_screen:
             self.alt_screen = new
             self.alt_screen_changed.emit(new)
@@ -1111,6 +1207,15 @@ class PtyBackend(QObject):
                     self.cwd_changed.emit(cwd)
             except Exception:
                 pass
+
+    def _scan_edit(self, data):
+        """The shell's `edit <file>` command (OSC 6969) asks to open a path."""
+        if "\x1b]6969;" not in data:
+            return
+        for m in OSC_EDIT_RE.finditer(data):
+            path = m.group(1).strip()
+            if path:
+                self.edit_file.emit(path)
 
     def _scan_osc52(self, data):
         """A program set the clipboard via OSC 52 (write-only; queries ignored)."""
@@ -1227,9 +1332,14 @@ class TerminalWidget(QWidget):
         self.search_matches = []   # absolute line numbers that match
         self.search_idx = -1
 
-        # caches for lines (PowerShell path) and for runs (Claude grid engine)
-        self._layout_cache = {}
-        self._run_cache = {}
+        # caches for lines (PowerShell path) and for runs (Claude grid engine).
+        # OrderedDict + LRU eviction (see _cache_put): a full-scrollback scroll
+        # touches more unique lines than the cap, and a hard .clear() at the cap
+        # would wipe every layout and re-shape the next screenful from scratch
+        # (a visible periodic hitch). Evicting only the oldest entry keeps the
+        # working set warm.
+        self._layout_cache = OrderedDict()
+        self._run_cache = OrderedDict()
 
         # show a "starting…" hint until the shell produces its first output
         # (conhost/ConPTY cold-start can take a couple of seconds), so the
@@ -1288,18 +1398,27 @@ class TerminalWidget(QWidget):
             lambda txt: QApplication.clipboard().setText(txt))
         self.backend.cwd_changed.connect(self._on_cwd_changed)
         self.backend.cmd_changed.connect(self._on_cmd_changed)
+        self.backend.edit_file.connect(self._on_edit_file)
+        self.backend.bidi_changed.connect(self._on_bidi_changed)
         self._cmd_started = None      # time the user submitted a command (for finish notify)
         self._exited = False
 
     def restart_with(self, command):
         """Closes the current shell and restarts the pane with a new shell (resetting state)."""
-        try:
-            # drop every signal (cwd/title, clipboard, command-ended too — not just
-            # the three below) so the dying shell's reader thread can't fire a slot
-            # against a pane that has already moved on to a new backend
-            self.backend.disconnect()
-        except Exception:
-            pass
+        # drop every signal (cwd/title, clipboard, command-ended too) so the dying
+        # shell's reader thread can't fire a slot against a pane that has already
+        # moved on to a new backend. NOTE: QObject.disconnect() with no args raises
+        # TypeError in PySide6 (was a silent no-op swallowed below), which left the
+        # old backend's `exited` connected — after a shell switch it fired _on_exit
+        # and set _exited=True, killing input until the tab was reopened. Disconnect
+        # each signal explicitly (per-signal .disconnect() drops all its receivers).
+        for _sig in ("data_ready", "exited", "alt_screen_changed", "command_ended",
+                     "clipboard_set", "cwd_changed", "cmd_changed", "edit_file",
+                     "bidi_changed"):
+            try:
+                getattr(self.backend, _sig).disconnect()
+            except Exception:
+                pass
         self.backend.close()
         self.scroll_offset = 0
         self.sel_anchor = self.sel_point = None
@@ -1318,6 +1437,22 @@ class TerminalWidget(QWidget):
         while w is not None and not isinstance(w, SessionWidget):
             w = w.parentWidget()
         return w
+
+    def _on_edit_file(self, path):
+        """`edit <file>` from the shell: open the path in an editor pane. Reuses an
+        existing editor in this tab if there is one, else splits one beside this
+        terminal. Runs on the UI thread (Qt delivers the cross-thread signal)."""
+        sess = self._session()
+        if sess is None:
+            return
+        editors = sess.findChildren(EditorWidget)
+        if editors:
+            ed = editors[0]
+        else:
+            ed = EditorWidget()
+            sess.split_pane(self, Qt.Horizontal, factory=lambda w=ed: w)
+        ed.load_file(path)
+        ed.setFocus()
 
     # ---- plugin API ----
     def send(self, text):
@@ -1421,6 +1556,12 @@ class TerminalWidget(QWidget):
             win.update_tab_busy(self)
 
     def _on_exit(self):
+        # ignore a stale 'exited' from a previous backend (shell switch): only the
+        # pane's current backend may mark it exited. Guards the tiny window where an
+        # old reader thread emits after restart — else input dies and the tab must
+        # be reopened.
+        if self.sender() is not None and self.sender() is not self.backend:
+            return
         self._exited = True
         self._busy_timer.stop()
         self._set_busy(False)
@@ -1780,7 +1921,7 @@ class TerminalWidget(QWidget):
         # with Arabic islands) so Qt re-orders it correctly
         rtl_fixed = False
         if self.claude_mode:
-            fixed = restore_bidi_line(text)
+            fixed = restore_bidi_line(text, self.backend.bidi_base_rtl)
             if fixed is not None:
                 text = fixed
                 rtl_fixed = True
@@ -1789,9 +1930,9 @@ class TerminalWidget(QWidget):
         cached = self._layout_cache.get(key)
         if cached is None:
             cached = self._build_layout(text, () if rtl_fixed else runs)
-            if len(self._layout_cache) > 800:
-                self._layout_cache.clear()
-            self._layout_cache[key] = cached
+            _lru_put(self._layout_cache, key, cached, 800)
+        else:
+            self._layout_cache.move_to_end(key)   # mark as recently used
         cached[0].draw(p, QPointF(0, y + self._text_dy))
         self._row_layouts[yi] = cached
 
@@ -1915,6 +2056,8 @@ class TerminalWidget(QWidget):
             return
         key = (text, tuple(spans), is_ar)
         cached = self._run_cache.get(key)
+        if cached is not None:
+            self._run_cache.move_to_end(key)      # mark as recently used
         if cached is None:
             layout = QTextLayout(text, self.font)
             opt = QTextOption()
@@ -1942,10 +2085,8 @@ class TerminalWidget(QWidget):
             line.setLineWidth(100000)
             line.setPosition(QPointF(0, 0))
             layout.endLayout()
-            if len(self._run_cache) > 2000:
-                self._run_cache.clear()
             cached = (layout, line)
-            self._run_cache[key] = cached
+            _lru_put(self._run_cache, key, cached, 2000)
         layout, line = cached
         natw = line.naturalTextWidth()
         if is_ar and natw > boxw + 0.5:
@@ -2242,7 +2383,7 @@ class TerminalWidget(QWidget):
                 if self.claude_mode:
                     # in Claude mode we copy the whole line logically (reversal can't be split by columns)
                     full = self._full_row_text(row, ncols)
-                    fixed = restore_bidi_line(full)
+                    fixed = restore_bidi_line(full, self.backend.bidi_base_rtl)
                     out.append((fixed if fixed is not None else full).rstrip())
                     continue
                 c0 = lo_c if L == lo_l else 0
@@ -2357,7 +2498,7 @@ class TerminalWidget(QWidget):
     def _line_logical_text(self, row, ncols):
         full = self._full_row_text(row, ncols)
         if self.claude_mode:
-            fixed = restore_bidi_line(full)
+            fixed = restore_bidi_line(full, self.backend.bidi_base_rtl)
             if fixed is not None:
                 full = fixed
         return full
@@ -2552,18 +2693,36 @@ class TerminalWidget(QWidget):
             tag = "" if self.auto_follow else i18n.t("win.title_manual")
         w.setWindowTitle(base + tag)
 
+    def _grid_wanted(self):
+        """Should the visual->logical grid engine drive this full-screen app?
+        Either the app declared explicit (visual-order) BiDi via the standard
+        BDSM escape (CSI 8 l, terminal-wg recommendation), or it is Claude —
+        which pre-reverses Arabic without announcing it — matched by name."""
+        return self.backend.bidi_explicit or cmd_is_claude(self.backend.running_cmd)
+
     def _on_alt_screen(self, active):
         """Enable/disable Claude mode automatically as a full-screen TUI program enters/leaves.
-        Only Claude needs the grid engine (it pre-reverses Arabic); pagers/editors like
+        Only apps that pre-reverse Arabic need the grid engine; pagers/editors like
         git's less, vim, man and htop also use the alternate screen but emit LOGICAL-order
         Arabic, so they stay on the normal path where Qt does native bidi (F2 forces grid)."""
         if self.auto_follow:
-            self.claude_mode = active and cmd_is_claude(self.backend.running_cmd)
+            self.claude_mode = active and self._grid_wanted()
             self._set_title()
             self.update()
             self._notify_status()
         if active and cmd_is_claude(self.backend.running_cmd):
             PLUGINS.emit("claude_detected", self)
+
+    def _on_bidi_changed(self):
+        """The app declared/withdrew its BiDi modes (BDSM/SCP) mid-session —
+        possibly after already entering the alternate screen. Re-evaluate."""
+        if self.auto_follow:
+            new = self.backend.alt_screen and self._grid_wanted()
+            if new != self.claude_mode:
+                self.claude_mode = new
+                self._set_title()
+                self._notify_status()
+        self.update()   # an SCP direction change alone needs a repaint too
 
     def toggle_claude_mode(self):
         # F2: if auto, switch to manual and flip the state; otherwise go back to auto
@@ -2572,7 +2731,7 @@ class TerminalWidget(QWidget):
             self.claude_mode = not self.claude_mode
         else:
             self.auto_follow = True
-            self.claude_mode = self.backend.alt_screen and cmd_is_claude(self.backend.running_cmd)
+            self.claude_mode = self.backend.alt_screen and self._grid_wanted()
         self._set_title()
         self.update()
         self._notify_status()
@@ -3563,18 +3722,28 @@ class EditorWidget(QWidget):
         self.header = QLabel("")
         self.header.setToolTip(i18n.t("editor.rename_tip"))
         self.header.installEventFilter(self)
+        open_btn = QPushButton("\U0001F4C2")   # 📂 open a file (also Ctrl+O)
+        open_btn.setFixedSize(24, 20)
+        open_btn.setToolTip(i18n.t("dialog.open_file") + " (Ctrl+O)")
+        open_btn.setStyleSheet(
+            "QPushButton{border:none;background:transparent;color:#9aa4b2;font-size:13px;}"
+            "QPushButton:hover{color:#2ea043;}")
+        open_btn.setFocusPolicy(Qt.NoFocus)    # clicking must not steal focus from the editor
+        open_btn.clicked.connect(self.open_dialog)
         close_btn = QPushButton("×")
         close_btn.setFixedSize(22, 20)
         close_btn.setToolTip(i18n.t("menu.close_pane").split("\t")[0])
         close_btn.setStyleSheet(
             "QPushButton{border:none;background:transparent;color:#9aa4b2;font-size:16px;}"
             "QPushButton:hover{color:#ff6b6b;}")
+        close_btn.setFocusPolicy(Qt.NoFocus)
         close_btn.clicked.connect(self._close_self)
         hbar = QWidget()
         hb = QHBoxLayout(hbar)
         hb.setContentsMargins(0, 0, 4, 0)
         hb.setSpacing(0)
         hb.addWidget(self.header, 1)
+        hb.addWidget(open_btn)
         hb.addWidget(close_btn)
         self.edit = CodeEdit(self)
         self.highlighter = CodeHighlighter(self.edit.document())
@@ -3659,6 +3828,17 @@ class EditorWidget(QWidget):
         path, _ = QFileDialog.getOpenFileName(self, i18n.t("dialog.open_file"))
         if path:
             self.open_path(path)
+
+    def load_file(self, path):
+        """Open an existing file, or set up a brand-new one (empty buffer whose
+        first Ctrl+S creates it) — used by the shell's `edit <file>` command."""
+        if os.path.exists(path):
+            self.open_path(path)
+        else:
+            self.path = path
+            self.edit.setPlainText("")
+            self.edit.document().setModified(False)
+            self._update_header()
 
     def open_path(self, path):
         try:
@@ -4492,7 +4672,7 @@ class MainWindow(QWidget):
         """Show a desktop notification via a (lazily created) tray icon."""
         try:
             if getattr(self, "_tray", None) is None:
-                icon_path = os.path.join(SCRIPT_DIR, "icon.ico")
+                icon_path = os.path.join(RESOURCE_DIR, "icon.ico")
                 ic = QIcon(icon_path) if os.path.exists(icon_path) else self.windowIcon()
                 self._tray = QSystemTrayIcon(ic, self)
                 self._tray.setToolTip("EasyTer")
