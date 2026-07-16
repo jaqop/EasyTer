@@ -717,16 +717,54 @@ def reverse_arabic_runs(line):
     return "".join(out)
 
 
-def restore_bidi_line(text):
+def restore_bidi_line(text, base_rtl=None):
     """Convert Claude's visual line to logical based on its base direction. None = no change.
     - RTL base (Arabic-dominant): reverse the whole line (with LTR islands).
     - LTR base with Arabic: reverse only the Arabic runs in place.
-    - pure English: no change."""
-    if line_is_rtl_visual(text):
+    - pure English: no change.
+    base_rtl overrides per-line autodetection when the application declared its
+    paragraph direction via SCP (see scan_bidi_modes): True = RTL, False = LTR,
+    None = autodetect from the line's content."""
+    if base_rtl is None:
+        base_rtl = line_is_rtl_visual(text)
+    if base_rtl:
         return unbidi_rtl_line(text)
     if _has_arabic(text):
         return reverse_arabic_runs(text)
     return None
+
+
+# ── terminal-wg BiDi escape sequences (freedesktop recommendation) ──
+# BDSM (ECMA-48 mode 8) declares who does the BiDi reordering:
+#   CSI 8 h  implicit — app sends LOGICAL order, terminal reorders (our default)
+#   CSI 8 l  explicit — app already reordered, it sends VISUAL order
+# Explicit mode is exactly what Claude Code (Ink) does on Windows, so it drives
+# the same visual->logical grid engine that cmd_is_claude() enables by name.
+# SCP (CSI Pn SP k) declares the paragraph base direction:
+#   0/omitted = terminal default (autodetect), 1 = LTR, 2 = RTL.
+# Like the ?1049/?2004 scans, we match the canonical single-parameter forms.
+_BDSM_IMPLICIT = "\x1b[8h"
+_BDSM_EXPLICIT = "\x1b[8l"
+_SCP_SEQS = (("\x1b[ k", None), ("\x1b[0 k", None),
+             ("\x1b[1 k", False), ("\x1b[2 k", True))
+
+
+def scan_bidi_modes(data, explicit, base_rtl):
+    """Scan an output chunk for BDSM/SCP and return the updated
+    (explicit, base_rtl, last_pos) — the last occurrence of each wins.
+    last_pos is the offset of the latest BDSM/SCP match (-1 if none), so the
+    caller can tell whether a reset marker (prompt, alt-screen exit) came
+    after the app declared its modes."""
+    ih = data.rfind(_BDSM_IMPLICIT)
+    il = data.rfind(_BDSM_EXPLICIT)
+    if ih >= 0 or il >= 0:
+        explicit = il > ih
+    best = -1
+    for seq, val in _SCP_SEQS:
+        p = data.rfind(seq)
+        if p > best:
+            best, base_rtl = p, val
+    return explicit, base_rtl, max(ih, il, best)
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -943,6 +981,7 @@ class PtyBackend(QObject):
     cwd_changed = Signal(str)          # working directory changed (for dynamic tab titles)
     cmd_changed = Signal()             # the running command started/ended (for the tab tooltip)
     edit_file = Signal(str)            # `edit <file>` in the shell (OSC 6969); arg = absolute path
+    bidi_changed = Signal()            # BDSM/SCP state changed (terminal-wg BiDi escapes)
 
     def __init__(self, cols, rows, command="powershell.exe", start_cwd=None):
         super().__init__()
@@ -955,6 +994,8 @@ class PtyBackend(QObject):
         self.alt_screen = False     # is a full-screen TUI program active now?
         self.at_prompt = False      # idle at an interactive prompt (OSC 133 B, no command running)
         self.bracketed_paste = False  # does the program want bracketed paste (?2004h)?
+        self.bidi_explicit = False  # BDSM: app sends visual-order text (CSI 8 l)
+        self.bidi_base_rtl = None   # SCP: declared paragraph direction (None=autodetect)
         self.cwd = None             # current working directory (from OSC 9;9 / OSC 7)
         self.running_cmd = ""       # the command line currently executing ("" = idle at prompt)
         self._prompt_col = None     # screen column where the prompt ends / input begins (OSC 133 B)
@@ -1132,7 +1173,18 @@ class PtyBackend(QObject):
         bl = buf.rfind("\x1b[?2004l")
         if bh >= 0 or bl >= 0:
             self.bracketed_paste = bh > bl
+        # terminal-wg BiDi escapes (BDSM/SCP): an app can declare visual-order
+        # output instead of relying on the Claude process-name heuristic
+        ex, base, seq_pos = scan_bidi_modes(buf, self.bidi_explicit, self.bidi_base_rtl)
+        # the app is gone (shell prompt back, or alt screen left) AFTER its last
+        # BiDi declaration: its modes no longer apply. Apps should restore on
+        # exit, but a crash never does — don't let a stale flag mangle the next.
+        if max(buf.rfind("\x1b]133;A"), il) > seq_pos:
+            ex, base = False, None
         self._scan_tail = buf[-8:]
+        if (ex, base) != (self.bidi_explicit, self.bidi_base_rtl):
+            self.bidi_explicit, self.bidi_base_rtl = ex, base
+            self.bidi_changed.emit()
         if new != self.alt_screen:
             self.alt_screen = new
             self.alt_screen_changed.emit(new)
@@ -1347,6 +1399,7 @@ class TerminalWidget(QWidget):
         self.backend.cwd_changed.connect(self._on_cwd_changed)
         self.backend.cmd_changed.connect(self._on_cmd_changed)
         self.backend.edit_file.connect(self._on_edit_file)
+        self.backend.bidi_changed.connect(self._on_bidi_changed)
         self._cmd_started = None      # time the user submitted a command (for finish notify)
         self._exited = False
 
@@ -1360,7 +1413,8 @@ class TerminalWidget(QWidget):
         # and set _exited=True, killing input until the tab was reopened. Disconnect
         # each signal explicitly (per-signal .disconnect() drops all its receivers).
         for _sig in ("data_ready", "exited", "alt_screen_changed", "command_ended",
-                     "clipboard_set", "cwd_changed", "cmd_changed", "edit_file"):
+                     "clipboard_set", "cwd_changed", "cmd_changed", "edit_file",
+                     "bidi_changed"):
             try:
                 getattr(self.backend, _sig).disconnect()
             except Exception:
@@ -1824,7 +1878,7 @@ class TerminalWidget(QWidget):
         # with Arabic islands) so Qt re-orders it correctly
         rtl_fixed = False
         if self.claude_mode:
-            fixed = restore_bidi_line(text)
+            fixed = restore_bidi_line(text, self.backend.bidi_base_rtl)
             if fixed is not None:
                 text = fixed
                 rtl_fixed = True
@@ -2286,7 +2340,7 @@ class TerminalWidget(QWidget):
                 if self.claude_mode:
                     # in Claude mode we copy the whole line logically (reversal can't be split by columns)
                     full = self._full_row_text(row, ncols)
-                    fixed = restore_bidi_line(full)
+                    fixed = restore_bidi_line(full, self.backend.bidi_base_rtl)
                     out.append((fixed if fixed is not None else full).rstrip())
                     continue
                 c0 = lo_c if L == lo_l else 0
@@ -2401,7 +2455,7 @@ class TerminalWidget(QWidget):
     def _line_logical_text(self, row, ncols):
         full = self._full_row_text(row, ncols)
         if self.claude_mode:
-            fixed = restore_bidi_line(full)
+            fixed = restore_bidi_line(full, self.backend.bidi_base_rtl)
             if fixed is not None:
                 full = fixed
         return full
@@ -2596,18 +2650,36 @@ class TerminalWidget(QWidget):
             tag = "" if self.auto_follow else i18n.t("win.title_manual")
         w.setWindowTitle(base + tag)
 
+    def _grid_wanted(self):
+        """Should the visual->logical grid engine drive this full-screen app?
+        Either the app declared explicit (visual-order) BiDi via the standard
+        BDSM escape (CSI 8 l, terminal-wg recommendation), or it is Claude —
+        which pre-reverses Arabic without announcing it — matched by name."""
+        return self.backend.bidi_explicit or cmd_is_claude(self.backend.running_cmd)
+
     def _on_alt_screen(self, active):
         """Enable/disable Claude mode automatically as a full-screen TUI program enters/leaves.
-        Only Claude needs the grid engine (it pre-reverses Arabic); pagers/editors like
+        Only apps that pre-reverse Arabic need the grid engine; pagers/editors like
         git's less, vim, man and htop also use the alternate screen but emit LOGICAL-order
         Arabic, so they stay on the normal path where Qt does native bidi (F2 forces grid)."""
         if self.auto_follow:
-            self.claude_mode = active and cmd_is_claude(self.backend.running_cmd)
+            self.claude_mode = active and self._grid_wanted()
             self._set_title()
             self.update()
             self._notify_status()
         if active and cmd_is_claude(self.backend.running_cmd):
             PLUGINS.emit("claude_detected", self)
+
+    def _on_bidi_changed(self):
+        """The app declared/withdrew its BiDi modes (BDSM/SCP) mid-session —
+        possibly after already entering the alternate screen. Re-evaluate."""
+        if self.auto_follow:
+            new = self.backend.alt_screen and self._grid_wanted()
+            if new != self.claude_mode:
+                self.claude_mode = new
+                self._set_title()
+                self._notify_status()
+        self.update()   # an SCP direction change alone needs a repaint too
 
     def toggle_claude_mode(self):
         # F2: if auto, switch to manual and flip the state; otherwise go back to auto
@@ -2616,7 +2688,7 @@ class TerminalWidget(QWidget):
             self.claude_mode = not self.claude_mode
         else:
             self.auto_follow = True
-            self.claude_mode = self.backend.alt_screen and cmd_is_claude(self.backend.running_cmd)
+            self.claude_mode = self.backend.alt_screen and self._grid_wanted()
         self._set_title()
         self.update()
         self._notify_status()
