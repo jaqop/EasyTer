@@ -235,7 +235,7 @@ def available_shells():
 _prof("before PySide6 import")
 from PySide6.QtCore import Qt, QObject, Signal, QRect, QPointF, QTimer
 from PySide6.QtGui import (
-    QFont, QFontMetrics, QFontMetricsF, QPainter, QColor, QKeyEvent, QPen,
+    QFont, QFontMetrics, QFontMetricsF, QFontInfo, QPainter, QColor, QKeyEvent, QPen,
     QTextLayout, QTextCharFormat, QTextOption, QFontDatabase, QSyntaxHighlighter,
     QPixmap, QIcon,
 )
@@ -1464,17 +1464,33 @@ class TerminalWidget(QWidget):
         if sess and hasattr(w, "set_tab_title"):
             w.set_tab_title(sess, title)
 
+    # Guaranteed-monospaced fallback chain. Consolas ships with every Windows
+    # install, so the primary face is always fixed-pitch even on a machine with
+    # none of the nicer mono fonts. Courier New is deliberately NOT in this list:
+    # it carries (crude) Arabic glyphs, so listed before the bundled Arabic faces
+    # it would hijack Arabic runs and degrade the app's core feature.
+    _MONO_FALLBACK = ["JetBrains Mono", "Cascadia Mono", "Consolas"]
+    # Arabic faces are loaded for glyph coverage but are PROPORTIONAL — they may
+    # only ever be a trailing fallback (shaped Arabic runs render fine), never the
+    # primary face, or the whole cell grid collapses (box-drawing and TUIs like
+    # Claude Code render with mis-aligned, fragmented borders).
+    _ARABIC_FALLBACK = ["Vazirmatn", "Amiri"]
+
     def _init_font(self):
         _ensure_arabic_font()
         self.font = QFont()
         # the font chosen in settings first, then a fallback chain (ensures Arabic coverage)
-        self.font.setFamilies([
-            SETTINGS["font_family"], "JetBrains Mono", "Cascadia Mono",
-            "Consolas", "Vazirmatn", "Amiri",
-        ])
+        self.font.setFamilies(
+            [SETTINGS["font_family"]] + self._MONO_FALLBACK + self._ARABIC_FALLBACK)
         self.font.setStyleHint(QFont.Monospace)
         self.font.setPointSize(self.font_size)
         self.font.setHintingPreference(QFont.PreferFullHinting)
+        # If the configured font resolved to a proportional face (e.g. one of the
+        # bundled Arabic fonts, or any non-mono font picked in Settings), drop it
+        # and fall back to the guaranteed-monospaced chain. A proportional terminal
+        # font breaks alignment everywhere — most visibly Claude mode's boxes.
+        if not QFontInfo(self.font).fixedPitch():
+            self.font.setFamilies(self._MONO_FALLBACK + self._ARABIC_FALLBACK)
         fm = QFontMetrics(self.font)
         # float cell width: the real advance of "M" is fractional (e.g. 9.344).
         # using the int floor (9) made `cols = width // cw` overestimate the
@@ -2837,6 +2853,9 @@ class SettingsDialog(QDialog):
 
         g.addWidget(QLabel(i18n.t("settings.font")), 0, 0)
         self.font_combo = QFontComboBox()
+        # a terminal needs a fixed-pitch font; hide proportional faces so a user
+        # can't pick one that collapses the cell grid (mis-aligned boxes/TUIs)
+        self.font_combo.setFontFilters(QFontComboBox.MonospacedFonts)
         self.font_combo.setCurrentText(SETTINGS["font_family"])
         g.addWidget(self.font_combo, 0, 1)
 
