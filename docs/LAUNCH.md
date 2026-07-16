@@ -4,10 +4,11 @@ Copy-paste posts for launching EasyTer. Goal of launch #1: **get users**, not re
 Post the same day across channels, then reply to every comment for the first 48 hours —
 early engagement is what makes these threads climb.
 
-**Before you post:** make sure the `v1.0.0` release has `EasyTer.exe` attached, the
-landing page is live (GitHub Pages → Settings → Pages → `main` / `/docs`), and you have
-a fresh side-by-side screenshot (broken Arabic in Windows Terminal vs. correct in EasyTer).
-That screenshot is your single most important asset — the whole pitch is visual.
+**Before you post:** make sure the latest release (`v1.1.0`) has `EasyTer-windows.zip`
+attached, the landing page is live (GitHub Pages → Settings → Pages → `main` / `/docs`),
+and you have a fresh side-by-side screenshot (broken Arabic in Windows Terminal vs.
+correct in EasyTer). That screenshot is your single most important asset — the whole
+pitch is visual.
 
 ---
 
@@ -137,7 +138,57 @@ For Arabic dev groups on X, Telegram, Discord, and LinkedIn (MENA tech).
 
 ---
 
-## 5. Where else to post
+## 5. v1.1.0 update post (July 16, 2026)
+
+For the same channels above once you've launched there — update posts re-engage the
+people who starred/commented the first time. Lead with the standards angle: it's the
+strongest hook for the technical crowd.
+
+**English:**
+```
+EasyTer v1.1.0 is out — the Windows terminal that renders Arabic correctly.
+
+What's new:
+
+• terminal-wg BiDi escape sequences (BDSM + SCP): programs can now *declare*
+  their text direction and ordering instead of being guessed at — implementing
+  the proposed standard for BiDi in terminals
+• kitty keyboard protocol: Esc vs Alt-key, Shift+Enter, Ctrl+letter all
+  disambiguated, so modern TUIs (neovim, helix) get the keys they expect
+• synchronized output (DECSET 2026): full-screen apps repaint without tearing
+• precise mouse selection and clicks around wide characters (CJK, emoji)
+• hardened session restore and a reader thread that survives malformed
+  escape sequences instead of freezing the pane
+• faster startup: the release is now a plain zipped folder (no self-extraction)
+• built on Python 3.14
+
+Download: https://github.com/jaqop/EasyTer/releases/latest
+Full changelog: https://github.com/jaqop/EasyTer/releases/tag/v1.1.0
+```
+
+**Arabic** (for the same Arabic communities as §4):
+```
+صدر EasyTer v1.1.0 — الطرفيّة التي تعرض العربية موصولةً وصحيحةً على ويندوز.
+
+الجديد في هذا الإصدار:
+
+• تسلسلات BiDi القياسية (BDSM + SCP): صار بإمكان البرامج أن تعلن بنفسها اتجاه
+  نصّها وترتيبه بدل الاعتماد على التخمين — تطبيقاً للمعيار المقترح من مجموعة
+  عمل الطرفيّات terminal-wg
+• بروتوكول kitty للوحة المفاتيح: تمييز Esc عن Alt وShift+Enter وCtrl+حرف،
+  فتصل المفاتيح الصحيحة للتطبيقات الحديثة مثل neovim وhelix
+• الإخراج المتزامن (DECSET 2026): تطبيقات الشاشة الكاملة تُرسم بلا تمزّق
+• تحديد ونقر أدقّ بالفأرة حول الحروف العريضة
+• استعادة جلسات أكثر صلابة، وخيط قراءة يتجاوز التسلسلات المعطوبة بدل تجميد اللوح
+• إقلاع أسرع: الإصدار الآن مجلد مضغوط عادي بلا فكّ ذاتي
+• مبني بـ Python 3.14
+
+التحميل: https://github.com/jaqop/EasyTer/releases/latest
+```
+
+---
+
+## 6. Where else to post
 
 - **dev.to / Hashnode** — a short write-up: "Why no Windows terminal renders Arabic,
   and how I fixed it." Technical posts on shaping/BiDi do well and rank on Google.
