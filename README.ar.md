@@ -70,13 +70,13 @@ vim…).
   في الوضع الخطأ.
 - واجهة ثنائيّة اللغة: **الإنجليزيّة (افتراضيّة)** والعربيّة. محليّ أوّلاً، **بلا telemetry**.
 
-## البداية السريعة — بلا Python، بلا Git، ملفّ واحد
+## البداية السريعة — بلا Python، بلا Git، تنزيل واحد
 
-**[⬇ نزّل EasyTer.exe من آخر إصدار](https://github.com/jaqop/EasyTer/releases/latest)**
-— ملفّ `EasyTer.exe` واحد مستقلّ (~٤٠ ميغابايت). نزّله، انقر عليه نقراً
-مزدوجاً، انتهيت. بلا Python، بلا pip، بلا Git، بلا إعداد PATH. إعداداتك
-تُحفَظ في `~\.easyter\`، فيمكن وضع الملفّ في أيّ مكان (سطح المكتب، USB،
-`C:\Tools`، …).
+**[⬇ نزّل EasyTer-windows.zip من آخر إصدار](https://github.com/jaqop/EasyTer/releases/latest)**
+— فكّ الضغط في أيّ مكان وشغّل `EasyTer\EasyTer.exe`. انتهيت. بلا Python، بلا
+pip، بلا Git، بلا إعداد PATH، وبلا فكّ ضغط عند كلّ تشغيل (يبدأ فوراً).
+إعداداتك تُحفَظ في `~\.easyter\`، فيمكن وضع المجلّد في أيّ مكان (سطح المكتب،
+USB، `C:\Tools`، …).
 
 > قد يحذّرك Windows SmartScreen عند أوّل تشغيل لأنّ الملفّ جديد وغير موقّع —
 > انقر **More info ← Run anyway**.
@@ -168,9 +168,10 @@ pythonw EasyTer.py
 
 ## بناء exe بنفسك
 
-`build.bat` (أو `python -m PyInstaller EasyTer.spec --noconfirm`) يُنتج
-`dist\EasyTer.exe` مستقلاً. كما يبنيه [سير عمل الإصدارات](.github/workflows/release.yml)
-تلقائياً ويرفقه بإصدار GitHub عند كلّ وسم `v*`.
+`build.bat` (أو `python -m PyInstaller EasyTer.spec --noconfirm`) يُنتج التطبيق
+المستقلّ في `dist\EasyTer\` — شغّل `dist\EasyTer\EasyTer.exe` مباشرة، أو اضغط
+المجلّد في ملفّ zip لمشاركته. كما يبنيه [سير عمل الإصدارات](.github/workflows/release.yml)
+تلقائياً ويرفق ملفّ zip بإصدار GitHub عند كلّ وسم `v*`.
 
 ## اللغة
 

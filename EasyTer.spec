@@ -2,7 +2,13 @@
 # PyInstaller build spec for EasyTer.
 #
 # Build:   python -m PyInstaller EasyTer.spec --noconfirm
-# Output:  dist/EasyTer.exe   (single file, no console window)
+# Output:  dist/EasyTer/EasyTer.exe   (onedir: folder + exe, no console window)
+#
+# Why onedir and not onefile: a onefile exe self-extracts ~40 MB to %TEMP% on
+# EVERY launch - that's most of the perceived "slow startup". Onedir launches
+# immediately. Ship releases as a zip of dist/EasyTer/ (users extract once,
+# run EasyTer.exe; settings still live in ~/.easyter so the folder can sit
+# anywhere).
 #
 # Notes:
 # - fonts/ and icon.ico are bundled; EasyTer.py finds them via RESOURCE_DIR
@@ -45,9 +51,8 @@ pyz = PYZ(a.pure)
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.datas,
     [],
+    exclude_binaries=True,   # binaries/datas live next to the exe (onedir)
     name='EasyTer',
     debug=False,
     bootloader_ignore_signals=False,
@@ -55,4 +60,13 @@ exe = EXE(
     upx=False,
     console=False,           # GUI app: no console window
     icon='icon.ico',
+)
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.datas,
+    strip=False,
+    upx=False,
+    name='EasyTer',
 )

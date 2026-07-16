@@ -41,6 +41,18 @@ STRINGS = {
         "menu.editor": "Editor Beside Terminal\tCtrl+Shift+N",
         "menu.close_pane": "Close Pane\tCtrl+Shift+W",
         "menu.settings": "Settings…\tCtrl+,",
+        "menu.copy_output": "Copy Command Output",
+        "menu.copy_cmd": "Copy Command",
+        "menu.rerun": "Run Command Again",
+        "menu.ask_claude": "Ask Claude About This Error",
+        "menu.read_only": "Read-Only Pane",
+        "badge.read_only": "READ-ONLY",
+        "claude.explain_title": "Claude — explain this error",
+        "claude.thinking": "Asking Claude…",
+        "claude.not_found": ("The Claude Code CLI was not found on PATH.\n"
+                             "Install it from https://claude.com/claude-code "
+                             "and try again."),
+        "claude.failed": "claude exited with code {code} and no output.",
         # search bar
         "search.no_results": "No results",
         "search.placeholder": "Search output…",
@@ -219,6 +231,18 @@ STRINGS = {
         "menu.editor": "محرّر جنب الطرفيّة\tCtrl+Shift+N",
         "menu.close_pane": "إغلاق القسم\tCtrl+Shift+W",
         "menu.settings": "الإعدادات…\tCtrl+,",
+        "menu.copy_output": "نسخ ناتج الأمر",
+        "menu.copy_cmd": "نسخ الأمر",
+        "menu.rerun": "تشغيل الأمر مجدّداً",
+        "menu.ask_claude": "اسأل Claude عن هذا الخطأ",
+        "menu.read_only": "قسم للقراءة فقط",
+        "badge.read_only": "قراءة فقط",
+        "claude.explain_title": "Claude — شرح الخطأ",
+        "claude.thinking": "جارٍ سؤال Claude…",
+        "claude.not_found": ("لم يُعثَر على أداة Claude Code في PATH.\n"
+                             "ثبّتها من https://claude.com/claude-code "
+                             "ثمّ أعد المحاولة."),
+        "claude.failed": "انتهى claude بالرمز {code} دون ناتج.",
         "search.no_results": "لا نتائج",
         "search.placeholder": "بحث في المخرجات…",
         "search.prev": "السابق (Shift+Enter)",

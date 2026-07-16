@@ -3,7 +3,7 @@ setlocal
 cd /d "%~dp0"
 
 echo ============================================================
-echo   EasyTer  -  build a standalone EasyTer.exe
+echo   EasyTer  -  build the standalone app (dist\EasyTer\)
 echo ============================================================
 echo.
 
@@ -26,7 +26,7 @@ if errorlevel 1 (
 )
 
 echo.
-echo   Building dist\EasyTer.exe ...
+echo   Building dist\EasyTer\ ...
 python -m PyInstaller EasyTer.spec --noconfirm
 if errorlevel 1 (
   echo.
@@ -36,7 +36,7 @@ if errorlevel 1 (
 )
 
 echo.
-echo   Done: dist\EasyTer.exe
+echo   Done: dist\EasyTer\EasyTer.exe  (zip the dist\EasyTer folder to share it)
 echo.
 pause
 exit /b 0
