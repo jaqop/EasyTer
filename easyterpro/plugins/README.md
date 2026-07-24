@@ -52,7 +52,7 @@ All bundled plugins load by default. To turn one off, add its module name to
 | `sample_timestamp.py` | palette action + `write_to_active` |
 | `sample_theme.py` | `add_theme` |
 | `sample_activity.py` | `on_output` (counts output chunks) |
-| `sample_overlay.py` | `add_paint_hook` (draws a badge; reads the counter from `sample_activity`) |
+| `sample_overlay.py` | `add_paint_hook` (draws a badge; reads the counter from `sample_activity`) — **disabled by default** |
 | `tab_title_cwd.py` | real plugin: tab title auto-follows the shell's current directory (split-aware) |
 
 ### `tab_title_cwd.py` — how it works

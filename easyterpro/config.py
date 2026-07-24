@@ -27,10 +27,11 @@ DEFAULTS = {
     # ملفّات صدفة مخصّصة يضيفها المستخدم؛ تُدمج مع المكتشَفة تلقائيًّا
     # كلّ عنصر: {"name": "...", "command": "..."}
     "profiles": [],
-    # الإضافات (plugins) المرفقة: كلّها تُحمَّل افتراضيًّا. عطّل إضافة باسمها في
-    # disabled، وخصّص إعداداتها تحت settings.<اسم الإضافة>.
+    # الإضافات (plugins) المرفقة: كلّها تُحمَّل افتراضيًّا عدا المُدرَجة في disabled.
+    # sample_overlay (شارة العدّاد التجريبيّة) معطّلةٌ افتراضيًّا كي لا تزحم العرض؛
+    # فعّلها بإزالتها من disabled. خصّص إعدادات إضافةٍ تحت settings.<اسم الإضافة>.
     #   "plugins": {"disabled": ["sample_overlay"], "settings": {"myplugin": {...}}}
-    "plugins": {"disabled": [], "settings": {}},
+    "plugins": {"disabled": ["sample_overlay"], "settings": {}},
 }
 
 
