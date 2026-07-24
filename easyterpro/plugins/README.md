@@ -54,6 +54,7 @@ All bundled plugins load by default. To turn one off, add its module name to
 | `sample_activity.py` | `on_output` (counts output chunks) |
 | `sample_overlay.py` | `add_paint_hook` (draws a badge; reads the counter from `sample_activity`) — **disabled by default** |
 | `tab_title_cwd.py` | real plugin: tab title auto-follows the shell's current directory (split-aware) |
+| `clock_corner.py` | real plugin: live `HH:MM:SS` clock in the active pane's top-right corner (`add_paint_hook` + a `QTimer` that repaints every second) |
 
 ### `tab_title_cwd.py` — how it works
 
