@@ -1,0 +1,20 @@
+EasyTer
+Copyright (c) 2026 jaqop
+
+This product includes third-party material distributed under its own terms.
+EasyTer itself is MIT licensed; see LICENSE.
+
+--------------------------------------------------------------------------
+Bundled fonts — SIL Open Font License 1.1
+--------------------------------------------------------------------------
+
+The following font files are redistributed in fonts/ under the SIL Open Font
+License, Version 1.1. The full license text is in fonts/OFL.txt.
+
+  fonts/Amiri-Regular.ttf      Amiri
+  fonts/Amiri-Bold.ttf         Amiri
+  fonts/Vazirmatn.ttf          Vazirmatn
+  fonts/NotoNaskhArabic.ttf    Noto Naskh Arabic
+
+These are bundled so that connected Arabic renders correctly from a fresh
+clone, with no font installation step.
