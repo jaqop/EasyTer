@@ -10,6 +10,9 @@ def _check_easyter(m):
     assert m.DEFAULT_SHELL == "powershell.exe"
     assert m.PS_REDRAW_KEY == "\x1b[15~"
     assert callable(m.kitty_encode_key)
+    assert callable(m.resolve_layout_key)
+    assert callable(m.terminal_key_sequence)
+    assert m.ENTER_DEFAULTS["shift"] == "esc_cr"
     assert callable(m._quote_shell_path)
 
 
