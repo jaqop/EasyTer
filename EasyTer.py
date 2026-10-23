@@ -323,6 +323,20 @@ SETTINGS = {
     "busy_dot": True,          # show a dot on a background tab while it is producing output
     "quake_enabled": True,     # global hotkey (Ctrl+Alt+`) to summon/hide EasyTer from anywhere
     "paste_protection": True,  # confirm before pasting multi-line / large clipboard text
+    # Modified Enter when the focused app has not enabled the kitty keyboard
+    # protocol. Kitty mode always sends CSI-u (Shift+Enter = CSI 13;2u,
+    # Alt+Enter = 13;3u, Ctrl+Enter = 13;5u). Legacy tokens:
+    #   esc_cr            ESC CR (\x1b\r) — Claude Code /terminal-setup newline
+    #   lf                line feed (\n) — Ctrl+J, newline in Claude Code and Codex
+    #   csi_u             kitty CSI-u even though the app did not ask for it
+    #   modify_other_keys xterm CSI 27;mod;13~ (Codex accepts this too)
+    #   cr                bare CR, same as Enter (submit)
+    # Shift+Enter defaults to esc_cr. Ctrl+Enter defaults to lf because a bare
+    # CR cannot be told apart from Enter, and both CLIs treat LF as newline.
+    # Alt+Enter defaults to esc_cr (legacy Meta+Enter, also a newline).
+    "enter_shift": "esc_cr",
+    "enter_ctrl": "lf",
+    "enter_alt": "esc_cr",
     "scrollback": 10000,       # lines of history kept per terminal
     "favorite_themes": [],     # themes hearted in the appearance gallery (shown first)
     "prompt_theme": "",        # chosen oh-my-posh prompt theme (.omp.json); applied to new tabs
@@ -869,6 +883,318 @@ def kitty_encode_key(key, ctrl, alt, shift):
         return csiu(key - Qt.Key_A + ord("a"))
     if Qt.Key_Space < int(key) <= Qt.Key_AsciiTilde:
         return csiu(int(key))    # digits/punctuation at their ASCII code
+    return None
+
+
+# Legacy modified-Enter tokens. See SETTINGS["enter_shift"] for what each sends.
+ENTER_MODES = ("esc_cr", "lf", "csi_u", "modify_other_keys", "cr")
+ENTER_DEFAULTS = {"shift": "esc_cr", "ctrl": "lf", "alt": "esc_cr", "chord": "csi_u"}
+_ENTER_SETTING = {"shift": "enter_shift", "ctrl": "enter_ctrl", "alt": "enter_alt"}
+
+# Windows virtual-key codes that are not already the Qt key value. Letters
+# (VK_A..VK_Z = 0x41..0x5A) and digits (0x30..0x39) match Qt.Key_A..Key_Z / Key_0..Key_9.
+_VK_TO_QT = {
+    0x08: Qt.Key_Backspace,
+    0x09: Qt.Key_Tab,
+    0x0D: Qt.Key_Return,
+    0x1B: Qt.Key_Escape,
+    0x20: Qt.Key_Space,
+    0x21: Qt.Key_PageUp,
+    0x22: Qt.Key_PageDown,
+    0x23: Qt.Key_End,
+    0x24: Qt.Key_Home,
+    0x25: Qt.Key_Left,
+    0x26: Qt.Key_Up,
+    0x27: Qt.Key_Right,
+    0x28: Qt.Key_Down,
+    0x2D: Qt.Key_Insert,
+    0x2E: Qt.Key_Delete,
+    0x6B: Qt.Key_Plus,          # VK_ADD, numpad
+    0x6D: Qt.Key_Minus,         # VK_SUBTRACT, numpad
+    0xBA: Qt.Key_Semicolon,     # VK_OEM_1
+    0xBB: Qt.Key_Equal,         # VK_OEM_PLUS, US =+
+    0xBC: Qt.Key_Comma,
+    0xBD: Qt.Key_Minus,
+    0xBE: Qt.Key_Period,
+    0xBF: Qt.Key_Slash,         # VK_OEM_2
+    0xC0: Qt.Key_QuoteLeft,     # VK_OEM_3
+    0xDB: Qt.Key_BracketLeft,
+    0xDC: Qt.Key_Backslash,
+    0xDD: Qt.Key_BracketRight,
+    0xDE: Qt.Key_Apostrophe,
+}
+for _i in range(12):
+    _VK_TO_QT[0x70 + _i] = Qt.Key_F1 + _i
+
+# IBM PC set-1 make codes for the US 101-key layout. Windows reports these in
+# the scan-code field (QKeyEvent.nativeScanCode); the extended-key flag is 0x100.
+def _build_us_pc101_scan():
+    table = {
+        0x01: Qt.Key_Escape,
+        0x0C: Qt.Key_Minus,
+        0x0D: Qt.Key_Equal,
+        0x0E: Qt.Key_Backspace,
+        0x0F: Qt.Key_Tab,
+        0x1A: Qt.Key_BracketLeft,
+        0x1B: Qt.Key_BracketRight,
+        0x1C: Qt.Key_Return,
+        0x27: Qt.Key_Semicolon,
+        0x28: Qt.Key_Apostrophe,
+        0x29: Qt.Key_QuoteLeft,
+        0x2B: Qt.Key_Backslash,
+        0x33: Qt.Key_Comma,
+        0x34: Qt.Key_Period,
+        0x35: Qt.Key_Slash,
+        0x39: Qt.Key_Space,
+    }
+    for index, ch in enumerate("1234567890"):
+        table[0x02 + index] = Qt.Key_0 + (ord(ch) - ord("0"))
+    for base, letters in ((0x10, "QWERTYUIOP"), (0x1E, "ASDFGHJKL"), (0x2C, "ZXCVBNM")):
+        for index, ch in enumerate(letters):
+            table[base + index] = Qt.Key_A + (ord(ch) - ord("A"))
+    return table
+
+
+_US_PC101_SCAN = _build_us_pc101_scan()
+
+# Unshifted, shifted character produced by that key on a US PC-101 keyboard.
+_US_PC101_TEXT = {
+    Qt.Key_1: ("1", "!"), Qt.Key_2: ("2", "@"), Qt.Key_3: ("3", "#"),
+    Qt.Key_4: ("4", "$"), Qt.Key_5: ("5", "%"), Qt.Key_6: ("6", "^"),
+    Qt.Key_7: ("7", "&"), Qt.Key_8: ("8", "*"), Qt.Key_9: ("9", "("),
+    Qt.Key_0: ("0", ")"),
+    Qt.Key_Minus: ("-", "_"), Qt.Key_Equal: ("=", "+"),
+    Qt.Key_BracketLeft: ("[", "{"), Qt.Key_BracketRight: ("]", "}"),
+    Qt.Key_Backslash: ("\\", "|"), Qt.Key_Semicolon: (";", ":"),
+    Qt.Key_Apostrophe: ("'", '"'), Qt.Key_QuoteLeft: ("`", "~"),
+    Qt.Key_Comma: (",", "<"), Qt.Key_Period: (".", ">"),
+    Qt.Key_Slash: ("/", "?"), Qt.Key_Space: (" ", " "),
+}
+
+# Primary language id (low 10 bits of a Windows LANGID). Arabic is 0x01
+# for every Arabic locale (ar-SA 0x0401, ar-IQ 0x0801, ...).
+_LANG_ARABIC = 0x01
+
+
+def _as_int(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _qt_key_from_vk(vk):
+    """Qt key for a Windows virtual-key code, or None if it is not one we map."""
+    vk = _as_int(vk)
+    if vk is None or vk <= 0 or vk > 0xFE:
+        return None
+    if 0x30 <= vk <= 0x39 or 0x41 <= vk <= 0x5A:
+        return vk
+    qt = _VK_TO_QT.get(vk)
+    return None if qt is None else int(qt)
+
+
+def _qt_key_from_scan(scan):
+    """Qt key for a US PC-101 set-1 scan code, or None."""
+    scan = _as_int(scan)
+    if scan is None or scan <= 0 or scan > 0x1FF:
+        return None
+    qt = _US_PC101_SCAN.get(scan & 0xFF)
+    return None if qt is None else int(qt)
+
+
+def physical_qt_key(native_virtual_key, native_scan_code):
+    """Physical key as a Qt key code.
+
+    Prefer the Windows virtual key (QKeyEvent.nativeVirtualKey). Arabic 101
+    keeps VK_A..VK_Z on the US positions and only changes the character.
+    When the virtual key is missing or not a key we know (some Qt builds
+    report the Arabic code point instead), fall back to the US PC-101 scan code.
+    """
+    qt = _qt_key_from_vk(native_virtual_key)
+    if qt is not None:
+        return qt
+    return _qt_key_from_scan(native_scan_code)
+
+
+def us_pc101_text(qt_key, shift):
+    """Character a US PC-101 keyboard produces for this Qt key, or None."""
+    qt_key = _as_int(qt_key)
+    if qt_key is None:
+        return None
+    if Qt.Key_A <= qt_key <= Qt.Key_Z:
+        ch = chr(qt_key)
+        return ch if shift else ch.lower()
+    pair = _US_PC101_TEXT.get(qt_key)
+    if pair is None:
+        return None
+    return pair[1] if shift else pair[0]
+
+
+def _altgr_text_differs(text, qt_key, shift):
+    """True when AltGr produced a printable character other than the US one."""
+    if not text or any(not ch.isprintable() for ch in text):
+        return False
+    us = us_pc101_text(qt_key, shift)
+    if us is None:
+        return True
+    if (len(text) == 1 and len(us) == 1 and text.isascii() and us.isascii()
+            and text.lower() == us.lower()):
+        return False
+    return text != us
+
+
+def _current_keyboard_hkl():
+    """Windows HKL for this thread, or None off Windows / on lookup failure."""
+    if sys.platform != "win32":
+        return None
+    try:
+        fn = ctypes.windll.user32.GetKeyboardLayout
+        fn.restype = ctypes.c_void_p
+        fn.argtypes = (ctypes.wintypes.DWORD,)
+        return int(fn(0) or 0)
+    except Exception:
+        return None
+
+
+def keyboard_layout_is_arabic(hkl=None):
+    """True when the active Windows layout's primary language is Arabic.
+
+    Pass an HKL to test a specific layout. The default reads the layout of
+    this thread. Non-Windows and a failed lookup report False, so Latin
+    shortcuts keep using QKeyEvent.key()."""
+    if hkl is None:
+        hkl = _current_keyboard_hkl()
+    hkl = _as_int(hkl)
+    if not hkl:
+        return False
+    return (hkl & 0x3FF) == _LANG_ARABIC
+
+
+def resolve_layout_key(event, arabic_layout=None):
+    """Return (key, altgr_text) for one QKeyEvent.
+
+    `key` is the Qt key shortcuts and encoders should use. On an Arabic
+    layout, Ctrl and Alt chords use the physical key (virtual key, else
+    US PC-101 scan code) so Ctrl+C is Ctrl+C even when the key's character
+    is ؤ. Plain typing is left alone, so Arabic letters still arrive as text.
+
+    `altgr_text` is set when AltGr (Ctrl+Alt, or GroupSwitch) produced a
+    character that differs from the US character for that physical key.
+    Callers insert that text and skip shortcut handling. AltGr that produces
+    the same character as the US key stays a Ctrl+Alt chord.
+    """
+    key = int(event.key())
+    if arabic_layout is None:
+        arabic_layout = keyboard_layout_is_arabic()
+    if not arabic_layout:
+        return key, None
+    mods = event.modifiers()
+    ctrl = bool(mods & Qt.ControlModifier)
+    alt = bool(mods & Qt.AltModifier)
+    shift = bool(mods & Qt.ShiftModifier)
+    group = bool(mods & Qt.GroupSwitchModifier)
+    if not (ctrl or alt or group):
+        return key, None
+    phys = physical_qt_key(event.nativeVirtualKey(), event.nativeScanCode())
+    text = event.text() or ""
+    if ((ctrl and alt) or group) and _altgr_text_differs(text, phys if phys is not None else key, shift):
+        return key, text
+    if (ctrl or alt) and phys is not None:
+        return phys, None
+    return key, None
+
+
+def _enter_mode(ctrl, alt, shift):
+    """Configured legacy mode for this Enter chord, or the built-in default."""
+    if int(ctrl) + int(alt) + int(shift) > 1:
+        which = "chord"
+    elif ctrl:
+        which = "ctrl"
+    elif alt:
+        which = "alt"
+    else:
+        which = "shift"
+    default = ENTER_DEFAULTS[which]
+    setting = _ENTER_SETTING.get(which)
+    if setting is None:
+        return default
+    mode = SETTINGS.get(setting, default)
+    return mode if mode in ENTER_MODES else default
+
+
+def _enter_mode_sequence(mode, ctrl, alt, shift):
+    mods = 1 + int(bool(shift)) + 2 * int(bool(alt)) + 4 * int(bool(ctrl))
+    if mode == "esc_cr":
+        return "\x1b\r"
+    if mode == "lf":
+        return "\n"
+    if mode == "csi_u":
+        return "\x1b[13;%du" % mods
+    if mode == "modify_other_keys":
+        return "\x1b[27;%d;13~" % mods
+    return "\r"
+
+
+def legacy_modified_enter(ctrl, alt, shift, mode=None):
+    """Bytes for Enter with modifiers when kitty encoding is not in use.
+
+    Unmodified Enter is CR. `mode` overrides the setting for this call;
+    an unknown mode falls back to that chord's default. Stacked modifiers
+    (Ctrl+Shift+Enter and the like) use CSI-u so the chord stays unambiguous.
+    """
+    if not (ctrl or alt or shift):
+        return "\r"
+    if mode not in ENTER_MODES:
+        mode = _enter_mode(ctrl, alt, shift)
+    return _enter_mode_sequence(mode, ctrl, alt, shift)
+
+
+def terminal_key_sequence(key, ctrl, alt, shift, text, *, kitty=False, altgr_text=None):
+    """Byte string to write to the pty, or None when the key carries no input.
+
+    Kitty (disambiguate flag) wins for anything it can encode, including
+    Shift/Ctrl/Alt+Enter as CSI 13;2u / 13;5u / 13;3u. Otherwise Enter with
+    a modifier uses legacy_modified_enter. AltGr text is sent unchanged so a
+    layout character is never rewritten into a ctrl sequence.
+    """
+    if altgr_text:
+        return altgr_text
+    key = int(key)
+    if kitty:
+        seq = kitty_encode_key(key, ctrl, alt, shift)
+        if seq is not None:
+            return seq
+    if key in (Qt.Key_Return, Qt.Key_Enter):
+        return legacy_modified_enter(ctrl, alt, shift)
+    if key == Qt.Key_Backspace:
+        return "\x7f"
+    if key == Qt.Key_Tab:
+        return "\t"
+    if key == Qt.Key_Escape:
+        return "\x1b"
+    if key == Qt.Key_Up:
+        return "\x1b[A"
+    if key == Qt.Key_Down:
+        return "\x1b[B"
+    if key == Qt.Key_Right:
+        return "\x1b[C"
+    if key == Qt.Key_Left:
+        return "\x1b[D"
+    if key == Qt.Key_Home:
+        return "\x1b[H"
+    if key == Qt.Key_End:
+        return "\x1b[F"
+    if key == Qt.Key_PageUp:
+        return "\x1b[5~"
+    if key == Qt.Key_PageDown:
+        return "\x1b[6~"
+    if key == Qt.Key_Delete:
+        return "\x1b[3~"
+    if ctrl and Qt.Key_A <= key <= Qt.Key_Z:
+        return chr(key - Qt.Key_A + 1)
+    if text:
+        return text
     return None
 
 
@@ -2407,20 +2733,46 @@ class TerminalWidget(QWidget):
             layout.draw(p, QPointF(dx, y + self._text_dy))
 
     # ---------- input ----------
+    def _write_seq(self, seq):
+        """Write one input sequence to this pane, or to every pane when broadcasting."""
+        if self.sel_anchor is not None:   # clear any stuck selection when typing
+            self.sel_anchor = self.sel_point = None
+        if not seq:
+            return
+        win = self.window()
+        if getattr(win, "broadcast", False):   # type once -> all terminals
+            for t in win.findChildren(TerminalWidget):
+                try:
+                    t.backend.write(seq)
+                except Exception:
+                    pass
+        else:
+            self.backend.write(seq)
+        self._blink = True            # cursor solid right when typing
+
     def keyPressEvent(self, event: QKeyEvent):
         if self._exited:
             return
-        key = event.key()
         mod = event.modifiers()
         ctrl = bool(mod & Qt.ControlModifier)
         shift = bool(mod & Qt.ShiftModifier)
         alt = bool(mod & Qt.AltModifier)
+        # Arabic layouts report the character, not the physical key. Ctrl/Alt
+        # shortcuts follow the virtual key; AltGr text is kept as a character.
+        key, altgr_text = resolve_layout_key(event)
         win = self.window()
         sess = self._session()
 
         # copy mode owns the keyboard while active (navigate/select the scrollback)
         if self.copy_mode:
-            self._copy_mode_key(key, ctrl, shift)
+            self._copy_mode_key(event.key() if altgr_text else key, ctrl, shift)
+            return
+
+        if altgr_text is not None:
+            # AltGr produced a layout character. Do not treat Ctrl+Alt as a shortcut.
+            self.scroll_offset = 0
+            if not self.read_only:
+                self._write_seq(altgr_text)
             return
 
         # plugin keybindings (take priority)
@@ -2555,65 +2907,20 @@ class TerminalWidget(QWidget):
         if self.read_only:
             return
 
-        seq = None
+        # Ctrl chords use the physical key (Arabic-safe). Other keys keep
+        # event.key() so a plain Arabic letter is not rewritten.
+        encode_key = key if ctrl else int(event.key())
         # kitty keyboard protocol: when the running app pushed the
         # "disambiguate" flag, encode via CSI u so modern TUIs (neovim, helix)
         # can tell Esc from alt-, ctrl+i from Tab, shift+enter from enter.
         kb = getattr(self.backend, "kitty_kb", None)
-        if kb and (kb[-1] & 1):
-            seq = kitty_encode_key(key, ctrl, alt, shift)
-        if key in (Qt.Key_Return, Qt.Key_Enter) and not self.backend.alt_screen:
+        kitty = bool(kb and (kb[-1] & 1))
+        if (encode_key in (Qt.Key_Return, Qt.Key_Enter) and not (ctrl or alt or shift)
+                and not self.backend.alt_screen):
             self._cmd_started = time.time()   # for long-command finish notifications
-        # legacy encoding only when kitty didn't produce a sequence — otherwise
-        # these branches would overwrite it and the app (which saw its flags
-        # acknowledged via CSI ? u) would misread the legacy bytes
-        if seq is None:
-            if key in (Qt.Key_Return, Qt.Key_Enter):
-                seq = "\r"
-            elif key == Qt.Key_Backspace:
-                seq = "\x7f"
-            elif key == Qt.Key_Tab:
-                seq = "\t"
-            elif key == Qt.Key_Escape:
-                seq = "\x1b"
-            elif key == Qt.Key_Up:
-                seq = "\x1b[A"
-            elif key == Qt.Key_Down:
-                seq = "\x1b[B"
-            elif key == Qt.Key_Right:
-                seq = "\x1b[C"
-            elif key == Qt.Key_Left:
-                seq = "\x1b[D"
-            elif key == Qt.Key_Home:
-                seq = "\x1b[H"
-            elif key == Qt.Key_End:
-                seq = "\x1b[F"
-            elif key == Qt.Key_PageUp:
-                seq = "\x1b[5~"
-            elif key == Qt.Key_PageDown:
-                seq = "\x1b[6~"
-            elif key == Qt.Key_Delete:
-                seq = "\x1b[3~"
-            elif ctrl and Qt.Key_A <= key <= Qt.Key_Z:
-                seq = chr(key - Qt.Key_A + 1)  # Ctrl+C=\x03 ...
-            else:
-                t = event.text()
-                if t:
-                    seq = t
-
-        if self.sel_anchor is not None:   # clear any stuck selection when typing
-            self.sel_anchor = self.sel_point = None
-        if seq:
-            win = self.window()
-            if getattr(win, "broadcast", False):   # type once -> all terminals
-                for t in win.findChildren(TerminalWidget):
-                    try:
-                        t.backend.write(seq)
-                    except Exception:
-                        pass
-            else:
-                self.backend.write(seq)
-            self._blink = True            # cursor solid right when typing
+        seq = terminal_key_sequence(
+            encode_key, ctrl, alt, shift, event.text(), kitty=kitty)
+        self._write_seq(seq)
 
     # ---------- mouse text selection ----------
     @staticmethod
@@ -3388,7 +3695,7 @@ class SettingsDialog(QDialog):
             "QLabel{color:#e6edf3;} QPushButton{background:#21262d;color:#e6edf3;"
             "border:1px solid #30363d;border-radius:6px;padding:6px 10px;}"
             "QPushButton:hover{background:#30363d;}"
-            "QSpinBox,QFontComboBox{background:#0d1117;color:#e6edf3;"
+            "QSpinBox,QFontComboBox,QComboBox{background:#0d1117;color:#e6edf3;"
             "border:1px solid #30363d;border-radius:4px;padding:3px;}"
         )
         # scrollable form so a tall settings list never clips the buttons
@@ -3554,6 +3861,23 @@ class SettingsDialog(QDialog):
         self.busy_dot_chk.setChecked(bool(SETTINGS.get("busy_dot", True)))
         g.addWidget(self.busy_dot_chk, 12, 0, 1, 2)
 
+        def _enter_combo(row, label_key, setting_key, default):
+            g.addWidget(QLabel(i18n.t(label_key)), row, 0)
+            combo = QComboBox()
+            current = SETTINGS.get(setting_key, default)
+            if current not in ENTER_MODES:
+                current = default
+            for mode in ENTER_MODES:
+                combo.addItem(i18n.t("enter." + mode), mode)
+            idx = combo.findData(current)
+            combo.setCurrentIndex(idx if idx >= 0 else 0)
+            g.addWidget(combo, row, 1)
+            return combo
+
+        self.enter_shift_combo = _enter_combo(13, "settings.enter_shift", "enter_shift", "esc_cr")
+        self.enter_ctrl_combo = _enter_combo(14, "settings.enter_ctrl", "enter_ctrl", "lf")
+        self.enter_alt_combo = _enter_combo(15, "settings.enter_alt", "enter_alt", "esc_cr")
+
         # fixed button bar below the scroll area (always visible)
         btns = QHBoxLayout()
         btns.setContentsMargins(16, 8, 16, 12)
@@ -3673,6 +3997,9 @@ class SettingsDialog(QDialog):
         SETTINGS["start_dir"] = self.start_dir
         SETTINGS["cursor_style"] = self.cursor_combo.currentData()
         SETTINGS["busy_dot"] = self.busy_dot_chk.isChecked()
+        SETTINGS["enter_shift"] = self.enter_shift_combo.currentData()
+        SETTINGS["enter_ctrl"] = self.enter_ctrl_combo.currentData()
+        SETTINGS["enter_alt"] = self.enter_alt_combo.currentData()
         save_settings()
         i18n.set_language(SETTINGS["language"])   # live: menus/dialogs/shortcuts switch on next open
         apply_base_colors()
@@ -4228,8 +4555,20 @@ class CodeEdit(QPlainTextEdit):
             num += 1
 
     def keyPressEvent(self, e):
+        # AltGr inserts its character. Ctrl chords are re-posted with the
+        # physical key so copy/paste/undo still match when the layout is Arabic.
+        key, altgr_text = resolve_layout_key(e)
+        if altgr_text:
+            self.insertPlainText(altgr_text)
+            return
         if self.owner._handle_shortcut(e):
             return
+        if bool(e.modifiers() & Qt.ControlModifier) and key != int(e.key()):
+            e = QKeyEvent(
+                e.type(), key, e.modifiers(),
+                e.nativeScanCode(), e.nativeVirtualKey(), e.nativeModifiers(),
+                "", e.isAutoRepeat(), e.count(),
+            )
         super().keyPressEvent(e)
 
     def focusInEvent(self, e):
@@ -4433,7 +4772,9 @@ class EditorWidget(QWidget):
         return w
 
     def _handle_shortcut(self, e):
-        k = e.key()
+        k, altgr_text = resolve_layout_key(e)
+        if altgr_text is not None:
+            return False
         m = e.modifiers()
         ctrl = bool(m & Qt.ControlModifier)
         shift = bool(m & Qt.ShiftModifier)
@@ -4660,6 +5001,7 @@ SHORTCUTS = [
     ]),
     ("sc.cat.clip", [
         ("sck.clip.copypaste", "sc.clip.copypaste"),
+        ("sck.clip.newline", "sc.clip.newline"),
         ("sck.clip.select", "sc.clip.select"),
         ("sck.clip.rightclick", "sc.clip.rightclick"),
         ("sck.clip.search", "sc.clip.search"),

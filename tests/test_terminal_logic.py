@@ -207,6 +207,9 @@ def test_load_settings_overlays_saved_keys(tmp_path, monkeypatch, settings_snaps
     # keys absent from the file keep their built-in defaults
     assert EasyTer.SETTINGS["font_family"] == "JetBrains Mono"
     assert EasyTer.SETTINGS["shell_integration"] is True
+    assert EasyTer.SETTINGS["enter_shift"] == "esc_cr"
+    assert EasyTer.SETTINGS["enter_ctrl"] == "lf"
+    assert EasyTer.SETTINGS["enter_alt"] == "esc_cr"
 
 
 def test_load_settings_ignores_missing_and_invalid_files(tmp_path, monkeypatch, settings_snapshot):
