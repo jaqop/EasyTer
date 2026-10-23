@@ -146,10 +146,12 @@ def test_line_to_ansi_round_trips_sgr_red():
 def test_osc7_file_url_becomes_a_windows_path():
     data = "\x1b]7;file://localhost/C:/Users/me/My%20Documents\x07"
     match = EasyTer.OSC7_RE.search(data)
-    assert EasyTer.PtyBackend._osc7_to_path(match.group(1)) == "C:\\Users\\me\\My Documents"
+    assert match.group("host") == "localhost"
+    assert EasyTer.PtyBackend._osc7_to_path(match.group("path")) == "C:\\Users\\me\\My Documents"
     st = "\x1b]7;file://wsl.local/c/Users/me\x1b\\"
     match = EasyTer.OSC7_RE.search(st)
-    assert EasyTer.PtyBackend._osc7_to_path(match.group(1)) == "c:\\Users\\me"
+    assert match.group("host") == "wsl.local"
+    assert EasyTer.PtyBackend._osc7_to_path(match.group("path")) == "c:\\Users\\me"
 
 
 def test_osc7_unix_and_bare_windows_paths_are_not_rewritten():
