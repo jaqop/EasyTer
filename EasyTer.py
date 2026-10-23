@@ -1485,7 +1485,9 @@ class PtyBackend(QObject):
         if "\x1b]6969;" not in data:
             return
         for m in OSC_EDIT_RE.finditer(data):
-            accepted = accept_local_path(m.group(1).strip())
+            # Do not strip first. strip() deletes a trailing newline or tab,
+            # and the gate rejects those controls only on the raw payload.
+            accepted = accept_local_path(m.group(1))
             if accepted:
                 self.edit_file.emit(accepted)
 

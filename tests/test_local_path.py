@@ -461,6 +461,11 @@ def test_confirm_dialog_shows_the_exact_path(qapp, monkeypatch):
     path = "D:\\proj\\\u0645\u0634\u0631\u0648\u0639\\a&b.txt"
 
     class _Box:
+        # The dialog reads these off the same class it constructs.
+        Question = QMessageBox.Question
+        Ok = QMessageBox.Ok
+        Cancel = QMessageBox.Cancel
+
         def __init__(self, parent=None):
             shown["parent"] = parent
 
