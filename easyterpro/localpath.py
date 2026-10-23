@@ -9,11 +9,9 @@ stat, open, startfile, or a child process until it has passed through
 
 ``accept_local_path`` is purely lexical. It does not call the filesystem: on
 Windows those calls are exactly the leak. ``local_drive_ok`` is a separate
-check, used after the gate and immediately before a filesystem call, that
-rejects drive letters ``GetDriveTypeW`` reports as remote, missing, or
-unknown. That query is not cached for the decision: a letter can be remapped
-after the first look. ``cached_drive_ok`` keeps the last answer for hover
-hints only, and hover never calls ``GetDriveTypeW``.
+check, used after the gate and before a filesystem call, that rejects drive
+letters ``GetDriveTypeW`` reports as remote, missing, or unknown. The result
+is cached per drive letter.
 
 The string ``accept_local_path`` returns is a Python ``str``. Callers pass it
 to ``*W`` Win32 APIs or to Python's str path functions. ``bytes`` would be
@@ -121,8 +119,7 @@ def cached_drive_ok(path):
     """True or False if this drive letter was already classified, else None.
 
     Does not call ``GetDriveTypeW``. Hover uses this so a disconnected
-    network drive is never probed on mouse move. A filesystem call must use
-    ``local_drive_ok`` instead: this cache is allowed to be stale.
+    network drive is never probed on mouse move.
     """
     letter = _drive_letter(path)
     if letter is None:
@@ -133,20 +130,19 @@ def cached_drive_ok(path):
 def local_drive_ok(path) -> bool:
     """False for ``DRIVE_REMOTE``, ``DRIVE_NO_ROOT_DIR``, and ``DRIVE_UNKNOWN``.
 
-    Always calls ``GetDriveTypeW``. The cache is updated for hover hints and
-    is not read here, so a remapped letter cannot pass on an old answer.
-    Call this only after ``accept_local_path``, and before ``isdir`` /
-    ``isfile`` / ``open``.
+    The result is cached per drive letter. Call this only after
+    ``accept_local_path``, and before ``isdir`` / ``isfile`` / ``open``.
+    The query goes through ``require_wide_path`` and ``GetDriveTypeW``.
     """
     letter = _drive_letter(path)
     if letter is None:
         return False
-    root = letter + ":\\"
+    cached = _DRIVE_CACHE.get(letter)
+    if cached is not None:
+        return cached
     try:
-        root = require_wide_path(root)
-        kind = _query_drive_type(root)
+        kind = _query_drive_type(require_wide_path(letter + ":\\"))
     except OSError:
-        _DRIVE_CACHE[letter] = False
         return False
     ok = kind not in _BLOCKED_DRIVE_TYPES
     _DRIVE_CACHE[letter] = ok
