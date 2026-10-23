@@ -1,6 +1,12 @@
-# Developer and CI tools. Runtime dependencies stay in requirements.txt.
+# Test and lint dependencies.
+# PySide6-Essentials is what release.yml ships, not the full PySide6
+# metapackage listed in requirements.txt.
 #   pip install -r requirements-dev.txt
--r requirements.txt
+-c constraints-dev.txt
+PySide6-Essentials>=6.5
+pywinpty>=3.0.5
+pyte
+wcwidth
 pytest
 pytest-qt
-ruff
+ruff==0.17.2

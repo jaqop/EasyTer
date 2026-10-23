@@ -3,6 +3,9 @@ __pycache__/
 *.pyc
 *.pyo
 
+# pytest junit report written by CI (test floor)
+junit.xml
+
 # PyInstaller build output (EasyTer.spec itself IS tracked)
 build/
 dist/
