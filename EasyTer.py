@@ -19,6 +19,7 @@ import glob
 import itertools
 import json
 import os
+import ntpath
 import re
 import shutil
 import subprocess
@@ -28,6 +29,8 @@ import threading
 import time
 import unicodedata
 import webbrowser
+
+from easyterpro.localpath import accept_local_path, osc7_host_ok
 
 
 # --- Optional startup/paint profiling (set EASYTER_PROFILE=1) --------------
@@ -156,9 +159,13 @@ FILEPATH_RE = re.compile(
 # B=command start, C=output start, D[;exit]=command end. Used for command blocks.
 OSC133_RE = re.compile(r"\x1b\]133;([A-D])([^\x07\x1b]*)(?:\x07|\x1b\\)")
 # Working-directory reports: OSC 9;9 (Windows path) and OSC 7 (file:// URL).
-# Used so a new tab/split opens in the current tab's directory.
+# Used so a new tab/split opens in the current tab's directory. The host is a
+# separate group: anything other than empty or localhost is dropped before the
+# path can reach the filesystem (see accept_local_path / osc7_host_ok).
 OSC99_RE = re.compile(r'\x1b\]9;9;"?([^"\x07\x1b]+)"?(?:\x07|\x1b\\)')
-OSC7_RE = re.compile(r"\x1b\]7;file://[^/]*(/[^\x07\x1b]*)(?:\x07|\x1b\\)")
+OSC7_RE = re.compile(
+    r"\x1b\]7;file://(?P<host>[^/\x07\x1b]*)(?P<path>/[^\x07\x1b]*)(?:\x07|\x1b\\)"
+)
 # OSC 52: a program sets the system clipboard (e.g. yank in vim over SSH). Write-only.
 OSC52_RE = re.compile(r"\x1b\]52;[cpqs0-7]*;([A-Za-z0-9+/=]+)(?:\x07|\x1b\\)")
 # OSC 6969 (EasyTer-private): the shell's `edit <file>` command asks EasyTer to
@@ -327,6 +334,94 @@ SETTINGS = {
     "favorite_themes": [],     # themes hearted in the appearance gallery (shown first)
     "prompt_theme": "",        # chosen oh-my-posh prompt theme (.omp.json); applied to new tabs
 }
+
+
+def existing_local_dir(path):
+    """Return ``path`` if the gate accepts it and it is an existing directory.
+
+    ``os.path.isdir`` is not called for a rejected path. On Windows that call
+    authenticates to a UNC host.
+    """
+    accepted = accept_local_path(path) if isinstance(path, str) else None
+    if not accepted:
+        return None
+    try:
+        if os.path.isdir(accepted):
+            return accepted
+    except OSError:
+        return None
+    return None
+
+
+def _drive_root_fallback():
+    """A local drive root used when every requested start directory was rejected."""
+    drive = os.environ.get("SystemDrive", "C:") or "C:"
+    if not drive.endswith(":"):
+        drive = "C:"
+    return accept_local_path(drive + "\\") or "C:\\"
+
+
+def resolve_start_dir(start_cwd=None):
+    """Directory a new shell may be spawned in.
+
+    Order is the requested directory (often the previous tab's OSC cwd), the
+    configured start folder, the user's home, then the system drive root.
+    Each candidate is gated before ``isdir``. A UNC home is not used.
+    """
+    home = os.path.expanduser("~")
+    for cand in (start_cwd, SETTINGS.get("start_dir"), home, _drive_root_fallback()):
+        found = existing_local_dir(cand)
+        if found:
+            return found
+    return _drive_root_fallback()
+
+
+def start_dir_from_argv(args):
+    """Folder from the command line (``EasyTer.py <dir>``), or None.
+
+    Relative arguments are joined lexically with the process cwd. ``abspath``
+    is not used: on Windows it calls ``GetFullPathName``, which touches UNC
+    paths. Only a path the gate accepts is passed to ``isdir``.
+    """
+    for arg in args:
+        if not isinstance(arg, str) or not arg:
+            continue
+        candidate = arg
+        if not ntpath.isabs(candidate):
+            candidate = ntpath.join(os.getcwd(), candidate)
+        found = existing_local_dir(candidate)
+        if found:
+            return found
+    return None
+
+
+def resolve_click_path(cand, cwd):
+    """Absolute local path for a Ctrl+click file reference, or None.
+
+    Relative references join the shell cwd (itself from OSC). The joined
+    string is gated before the caller may ``isfile`` it.
+    """
+    if not isinstance(cand, str) or not cand:
+        return None
+    expanded = os.path.expanduser(cand)
+    if not ntpath.isabs(expanded):
+        base = cwd if isinstance(cwd, str) and cwd else os.getcwd()
+        expanded = ntpath.join(base, expanded)
+    return accept_local_path(expanded)
+
+
+def confirm_local_open(parent, path):
+    """Confirm an OSC 6969 open. ``path`` is shown exactly, with no rich text."""
+    from PySide6.QtWidgets import QMessageBox
+    box = QMessageBox(parent)
+    box.setTextFormat(Qt.PlainText)
+    box.setIcon(QMessageBox.Question)
+    box.setWindowTitle(i18n.t("edit.confirm_title"))
+    box.setText(path)
+    box.setInformativeText(i18n.t("edit.confirm_body"))
+    box.setStandardButtons(QMessageBox.Ok | QMessageBox.Cancel)
+    box.setDefaultButton(QMessageBox.Cancel)
+    return box.exec() == QMessageBox.Ok
 
 
 def bg_rgba():
@@ -1128,10 +1223,9 @@ class PtyBackend(QObject):
                 spec = spec + ["-NoExit", "-Command", setup + PS_SHELL_INTEGRATION]
         # start the shell in: the requested dir (new tab/split inherits the
         # current tab's directory), else the configured start folder, else home —
-        # never inheriting whatever launched EasyTer (often C:\Windows\system32)
-        start_dir = start_cwd or SETTINGS.get("start_dir") or os.path.expanduser("~")
-        if not (isinstance(start_dir, str) and os.path.isdir(start_dir)):
-            start_dir = os.path.expanduser("~")
+        # never inheriting whatever launched EasyTer (often C:\Windows\system32).
+        # start_cwd is often an OSC working directory, so it is gated before isdir.
+        start_dir = resolve_start_dir(start_cwd)
         # Spawning can fail (a saved session points at an uninstalled shell — WSL
         # removed, a renamed Git Bash path, a bad command). Under pythonw stderr is
         # swallowed, so an uncaught error here means the window never appears. Keep
@@ -1352,32 +1446,48 @@ class PtyBackend(QObject):
             self.alt_screen_changed.emit(new)
 
     def _scan_cwd(self, data):
-        """Track the working directory from OSC 9;9 (Windows path) or OSC 7 (URL)."""
+        """Track the working directory from OSC 9;9 (Windows path) or OSC 7 (URL).
+
+        The report is terminal output. A non-local host (OSC 7) or a path the
+        gate rejects is ignored, and ``isdir`` is not called for it.
+        """
         if "\x1b]9;9;" not in data and "\x1b]7;" not in data:
             return
-        cwd = None
+        raw = None
+        saw = False
         for m in OSC99_RE.finditer(data):
-            cwd = m.group(1)
-        if cwd is None:
+            saw = True
+            raw = m.group(1)
+        if not saw:
             for m in OSC7_RE.finditer(data):
-                cwd = self._osc7_to_path(m.group(1))
-        if cwd:
-            cwd = cwd.strip().rstrip("\\/") or cwd.strip()
-            try:
-                if os.path.isdir(cwd) and cwd != self.cwd:
-                    self.cwd = cwd
-                    self.cwd_changed.emit(cwd)
-            except Exception:
-                pass
+                saw = True
+                if osc7_host_ok(m.group("host")):
+                    raw = self._osc7_to_path(m.group("path"))
+                else:
+                    raw = None
+        if not saw or raw is None:
+            return
+        accepted = accept_local_path(raw)
+        if not accepted:
+            return
+        try:
+            if os.path.isdir(accepted) and accepted != self.cwd:
+                self.cwd = accepted
+                self.cwd_changed.emit(accepted)
+        except OSError:
+            return
 
     def _scan_edit(self, data):
-        """The shell's `edit <file>` command (OSC 6969) asks to open a path."""
+        """The shell's `edit <file>` command (OSC 6969) asks to open a path.
+
+        Rejected paths are not emitted, so they are never stored or opened.
+        """
         if "\x1b]6969;" not in data:
             return
         for m in OSC_EDIT_RE.finditer(data):
-            path = m.group(1).strip()
-            if path:
-                self.edit_file.emit(path)
+            accepted = accept_local_path(m.group(1).strip())
+            if accepted:
+                self.edit_file.emit(accepted)
 
     def _scan_osc52(self, data):
         """A program set the clipboard via OSC 52 (write-only; queries ignored)."""
@@ -1644,7 +1754,16 @@ class TerminalWidget(QWidget):
     def _on_edit_file(self, path):
         """`edit <file>` from the shell: open the path in an editor pane. Reuses an
         existing editor in this tab if there is one, else splits one beside this
-        terminal. Runs on the UI thread (Qt delivers the cross-thread signal)."""
+        terminal. Runs on the UI thread (Qt delivers the cross-thread signal).
+
+        The path is gated again here (the signal may outlive a future caller),
+        and a confirmation dialog shows the exact path before anything is opened.
+        """
+        accepted = accept_local_path(path)
+        if not accepted:
+            return
+        if not confirm_local_open(self, accepted):
+            return
         sess = self._session()
         if sess is None:
             return
@@ -1654,7 +1773,7 @@ class TerminalWidget(QWidget):
         else:
             ed = EditorWidget()
             sess.split_pane(self, Qt.Horizontal, factory=lambda w=ed: w)
-        ed.load_file(path)
+        ed.load_file(accepted)
         ed.setFocus()
 
     # ---- plugin API ----
@@ -2688,11 +2807,14 @@ class TerminalWidget(QWidget):
             mm = re.match(r"^(.+?):(\d+)$", cand)
             if mm:
                 cand, ln = mm.group(1), int(mm.group(2))
-            cand = os.path.expanduser(cand)
-            if not os.path.isabs(cand):
-                cand = os.path.join(self.backend.cwd or os.getcwd(), cand)
-            if os.path.isfile(cand):
-                return cand, ln
+            resolved = resolve_click_path(cand, self.backend.cwd)
+            if not resolved:
+                continue
+            try:
+                if os.path.isfile(resolved):
+                    return resolved, ln
+            except OSError:
+                continue
         return None
 
     def _open_in_editor(self, path, line=None):
@@ -4372,17 +4494,29 @@ class EditorWidget(QWidget):
     def load_file(self, path):
         """Open an existing file, or set up a brand-new one (empty buffer whose
         first Ctrl+S creates it) — used by the shell's `edit <file>` command."""
-        if os.path.exists(path):
-            self.open_path(path)
+        accepted = accept_local_path(path)
+        if not accepted:
+            return
+        try:
+            exists = os.path.exists(accepted)
+        except OSError:
+            return
+        if exists:
+            self.open_path(accepted)
         else:
-            self.path = path
+            self.path = accepted
             self.edit.setPlainText("")
             self.edit.document().setModified(False)
             self._update_header()
 
     def open_path(self, path):
+        accepted = accept_local_path(path)
+        if not accepted:
+            # Leave the buffer alone. Replacing it would risk a later save
+            # writing that message over the file that was already open.
+            return
         try:
-            with open(path, encoding="utf-8", errors="replace") as fh:
+            with open(accepted, encoding="utf-8", errors="replace") as fh:
                 data = fh.read()
             # disable repaints during the bulk insert: much faster for big files
             self.edit.setUpdatesEnabled(False)
@@ -4390,7 +4524,7 @@ class EditorWidget(QWidget):
                 self.edit.setPlainText(data)
             finally:
                 self.edit.setUpdatesEnabled(True)
-            self.path = path
+            self.path = accepted
             self.edit.document().setModified(False)
         except Exception as ex:
             self.edit.setPlainText(i18n.t("editor.open_failed", ex=ex))
@@ -4399,16 +4533,24 @@ class EditorWidget(QWidget):
     def save(self):
         if not self.path:
             return self.save_as()
+        accepted = accept_local_path(self.path)
+        if not accepted:
+            self.path = None
+            self.header.setText(i18n.t("editor.save_failed", ex="rejected path"))
+            self._update_header()
+            return
+        self.path = accepted
         try:
             # write to a sibling temp file then atomically replace, so a failed or
             # interrupted write (disk full, dropped network drive) can't destroy the
-            # original file the way truncating it with open(..., "w") would
-            d = os.path.dirname(os.path.abspath(self.path)) or "."
+            # original file the way truncating it with open(..., "w") would.
+            # dirname is lexical; abspath would call GetFullPathName on Windows.
+            d = ntpath.dirname(accepted) or accepted
             fd, tmp = tempfile.mkstemp(dir=d, prefix=".easyter-", suffix=".tmp")
             try:
                 with os.fdopen(fd, "w", encoding="utf-8") as fh:
                     fh.write(self.edit.toPlainText())
-                os.replace(tmp, self.path)
+                os.replace(tmp, accepted)
             except Exception:
                 try:
                     os.unlink(tmp)
@@ -4487,7 +4629,10 @@ def serialize_node(widget):
     if isinstance(widget, TerminalWidget):
         return {"type": "term", "command": widget.command}
     if isinstance(widget, EditorWidget):
-        return {"type": "editor", "path": widget.path, "title": widget.custom_title}
+        # A path the gate rejects (or that was never accepted) is not written.
+        # Session files are plain JSON and are re-read on the next launch.
+        path = accept_local_path(widget.path) if isinstance(widget.path, str) else None
+        return {"type": "editor", "path": path, "title": widget.custom_title}
     return None
 
 
@@ -4498,7 +4643,9 @@ def build_node(node):
     if node.get("type") == "term":
         return TerminalWidget(command=restore_command(node.get("command")))
     if node.get("type") == "editor":
-        return EditorWidget(path=node.get("path"), title=node.get("title"))
+        raw = node.get("path")
+        path = accept_local_path(raw) if isinstance(raw, str) else None
+        return EditorWidget(path=path, title=node.get("title"))
     orient = Qt.Horizontal if node.get("orient") == "h" else Qt.Vertical
     split = QSplitter(orient)
     split.setHandleWidth(6)
@@ -4563,7 +4710,8 @@ class SessionWidget(QWidget):
             t.backend.close()
 
     def split_pane(self, pane, orientation, factory=None):
-        cwd = pane.backend.cwd if isinstance(pane, TerminalWidget) else None
+        raw_cwd = pane.backend.cwd if isinstance(pane, TerminalWidget) else None
+        cwd = accept_local_path(raw_cwd) if isinstance(raw_cwd, str) else None
         new_w = factory() if factory else TerminalWidget(start_cwd=cwd)
         parent = pane.parentWidget()
         split = QSplitter(orientation)
@@ -4798,8 +4946,9 @@ class MainWindow(QWidget):
 
     def _open_initial_tab(self, start_dir):
         # launched with a folder ("Open EasyTer here"): open one fresh tab there
-        if start_dir and os.path.isdir(start_dir):
-            self.new_tab(start_cwd=start_dir)
+        opened = existing_local_dir(start_dir) if start_dir else None
+        if opened:
+            self.new_tab(start_cwd=opened)
         elif not self.restore_session():
             self.new_tab()
         _prof("first tab ready")
@@ -4873,12 +5022,12 @@ class MainWindow(QWidget):
         """The working directory of the focused terminal (for new tabs/splits)."""
         foc = QApplication.focusWidget()
         if isinstance(foc, TerminalWidget) and foc.backend.cwd:
-            return foc.backend.cwd
+            return accept_local_path(foc.backend.cwd)
         cur = self.tabs.currentWidget()
         if isinstance(cur, SessionWidget):
             for t in cur._all_terms():
                 if t.backend.cwd:
-                    return t.backend.cwd
+                    return accept_local_path(t.backend.cwd)
         return None
 
     def new_tab(self, tree=None, name=None, shell=None, start_cwd=None):
@@ -5299,11 +5448,7 @@ def main():
     load_plugins()                      # registers plugin keybindings/commands/themes/hooks
     _prof("settings/themes/plugins loaded")
     # optional folder argument ("Open EasyTer here" / `EasyTer.py <dir>`)
-    start_dir = None
-    for arg in sys.argv[1:]:
-        if os.path.isdir(arg):
-            start_dir = os.path.abspath(arg)
-            break
+    start_dir = start_dir_from_argv(sys.argv[1:])
     win = MainWindow(start_dir=start_dir)
     _prof("main window built")
     win.show()
