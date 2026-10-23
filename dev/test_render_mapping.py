@@ -154,9 +154,11 @@ class BlankLineBackgroundTest(unittest.TestCase):
 class SearchDebounceTest(unittest.TestCase):
     def setUp(self):
         self.tw = E.TerminalWidget(command="cmd.exe")
+        b = self.tw.backend
+        self.addCleanup(b.close)
         self.tw.resize(1200, 700)
-        with self.tw.backend.lock:
-            self.tw.backend.stream.feed("\x1b[2J\x1b[Hhello world\r\n")
+        with b.lock:
+            b.stream.feed("\x1b[2J\x1b[Hhello world\r\n")
 
     def test_empty_term_clears_immediately(self):
         self.tw.search_matches = [1, 2, 3]
@@ -183,6 +185,7 @@ class BackendReleaseTest(unittest.TestCase):
     def test_release_marks_dead_and_nulls_proc(self):
         tw = E.TerminalWidget(command="cmd.exe")
         b = tw.backend
+        self.addCleanup(b.close)
         self.assertTrue(b._alive)
         self.assertIsNotNone(b.proc)
         b._release()
@@ -191,18 +194,21 @@ class BackendReleaseTest(unittest.TestCase):
 
     def test_release_is_idempotent(self):
         b = E.TerminalWidget(command="cmd.exe").backend
+        self.addCleanup(b.close)
         b._release()
         b._release()   # must not raise on the second call (proc already None)
         self.assertIsNone(b.proc)
 
     def test_close_delegates_to_release(self):
         b = E.TerminalWidget(command="cmd.exe").backend
+        self.addCleanup(b.close)
         b.close()
         self.assertFalse(b._alive)
         self.assertIsNone(b.proc)
 
     def test_write_after_release_is_noop(self):
         b = E.TerminalWidget(command="cmd.exe").backend
+        self.addCleanup(b.close)
         b._release()
         b.write("echo hi\r")   # guarded by _alive / proc-is-None: must not raise
 

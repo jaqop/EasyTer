@@ -1477,6 +1477,17 @@ class PtyBackend(QObject):
         self._release()
 
 
+def _quote_shell_path(path):
+    """Quote a dropped path so the shell receives it as one argument.
+
+    Paths that contain a space or a tab are wrapped in double quotes, and a
+    double quote already inside the path is escaped with a backslash. Any
+    other path is returned unchanged."""
+    if any(ws in path for ws in (" ", "\t")):
+        return '"' + path.replace('"', '\\"') + '"'
+    return path
+
+
 class TerminalWidget(QWidget):
     def __init__(self, command=None, start_cwd=None):
         super().__init__()
@@ -3128,11 +3139,7 @@ class TerminalWidget(QWidget):
             event.ignore()
             return
         # quote any path containing whitespace so it reaches the shell intact
-        chunks = []
-        for pth in parts:
-            if any(ws in pth for ws in (" ", "\t")):
-                pth = '"' + pth.replace('"', '\\"') + '"'
-            chunks.append(pth)
+        chunks = [_quote_shell_path(pth) for pth in parts]
         self.setFocus()
         self.scroll_offset = 0
         self.backend.write(" ".join(chunks))

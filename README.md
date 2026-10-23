@@ -179,6 +179,19 @@ standalone app in `dist\EasyTer\` — run `dist\EasyTer\EasyTer.exe` directly, o
 zip the folder to share it. The [release workflow](.github/workflows/release.yml)
 builds it and attaches the zip to a GitHub Release automatically on every `v*` tag.
 
+## Tests
+
+```sh
+pip install -r requirements-dev.txt
+python -m pytest
+```
+
+CI (`.github/workflows/ci.yml`) runs that suite on Windows against
+`PySide6-Essentials`, the same package the release build ships. `TEST_FLOOR`
+in the workflow is the minimum number of tests that must pass. Any pull
+request that adds tests raises `TEST_FLOOR` to the new passed count. A skipped
+test fails the run, so an import `skipIf` cannot drop a test silently.
+
 ## Language
 
 The UI is English by default. To switch to Arabic: **Settings (`Ctrl+,`) → Language →
