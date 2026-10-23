@@ -33,6 +33,7 @@ class PtyBackend(QObject):
         self.stream = pyte.Stream(self.screen)
         self._alive = True
         self.alt_screen = False     # هل يعمل تطبيق TUI ملء الشاشة الآن؟
+        self.bracketed_paste = False  # ?2004h: اللصق يُغلَّف حتى لا تُنفَّذ أسطره
         self._scan_tail = ""        # ذيل لالتقاط تسلسلٍ مقسومٍ بين قراءتين
         self.proc = PtyProcess.spawn(command, dimensions=(rows, cols))
         threading.Thread(target=self._reader, daemon=True).start()
@@ -72,6 +73,10 @@ class PtyBackend(QObject):
         new = self.alt_screen
         if ih >= 0 or il >= 0:
             new = ih > il
+        bh = buf.rfind("\x1b[?2004h")
+        bl = buf.rfind("\x1b[?2004l")
+        if bh >= 0 or bl >= 0:
+            self.bracketed_paste = bh > bl
         self._scan_tail = buf[-8:]
         if new != self.alt_screen:
             self.alt_screen = new

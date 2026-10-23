@@ -18,7 +18,7 @@ env:
   # pytest-qt and the dev Qt tests have no display on the runner
   QT_QPA_PLATFORM: offscreen
   # Minimum passed-test count. Raise this in the same PR that adds tests.
-  TEST_FLOOR: 328
+  TEST_FLOOR: 368
 
 jobs:
   test:

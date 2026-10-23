@@ -50,7 +50,8 @@ WSL, Claude Code, vim, …).
 - **Embedded editor** pane with syntax highlighting and line numbers (handles large
   files efficiently).
 - **Clickable links** (`Ctrl`+click), **multiple cursor styles**, **paste protection**
-  + bracketed paste, and **OSC 52 clipboard** (programs can set the clipboard).
+  + bracketed paste, and **OSC 52 clipboard** (off unless enabled in Settings;
+  each write asks first and is limited to 1 MB).
 - **Desktop notification** when a long command finishes while EasyTer is in the
   background.
 - **Quake-style global hotkey** (`Ctrl+Alt+`​`) to summon/hide EasyTer from anywhere.

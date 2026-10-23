@@ -16,6 +16,9 @@ from . import render
 from . import pluginhost
 from .backend import PtyBackend
 from .config import config
+from .pasteguard import guarded_paste
+from .shellquote import prepare_dropped_files, reveal_format_chars, sanitize_dropped_text
+from .shellquote import quote_shell_path as _quote_shell_path  # noqa: F401
 
 import re
 import webbrowser
@@ -48,16 +51,6 @@ def _is_arabic_letter(ch):
     return (0x0600 <= o <= 0x06FF or 0x0750 <= o <= 0x077F
             or 0x08A0 <= o <= 0x08FF or 0xFB50 <= o <= 0xFDFF
             or 0xFE70 <= o <= 0xFEFF)
-
-
-def _quote_shell_path(path):
-    """اقتبس مسارًا مُسقطًا يحوي فراغًا أو جدولة حتى يصل للصدفة وسيطًا واحدًا.
-
-    علامة الاقتباس المزدوجة داخل المسار تُهرَّب بشرطة عكسيّة. المسارات بلا
-    فراغ تُعاد كما هي."""
-    if any(ws in path for ws in (" ", "\t")):
-        return '"' + path.replace('"', '\\"') + '"'
-    return path
 
 
 class TerminalWidget(QWidget):
@@ -110,6 +103,7 @@ class TerminalWidget(QWidget):
 
         self._alt_screen = False    # تطبيق TUI ملء الشاشة نشط → المسار الشبكيّ
         self._run_cache = {}        # ذاكرة تخطيطات المقاطع (المسار الشبكيّ)
+        self.command = command
         self.backend = PtyBackend(self.cols, self.rows, command=command)
         self.backend.data_ready.connect(self._on_data)
         self.backend.exited.connect(self._on_exit)
@@ -663,10 +657,29 @@ class TerminalWidget(QWidget):
         if txt:
             QApplication.clipboard().setText(txt)
 
+    def _confirm_paste(self, text):
+        from PySide6.QtWidgets import QMessageBox
+        lines = text.count("\n") + (0 if text.endswith("\n") else 1)
+        box = QMessageBox(self)
+        box.setWindowTitle("لصق")
+        box.setText(
+            "لصق %d سطراً (%d حرفاً)؟ اللصق متعدّد الأسطر أو الذي يحوي محارف تحكّم قد ينفّذ أوامر فوراً."
+            % (lines, len(text)))
+        box.setStandardButtons(QMessageBox.Ok | QMessageBox.Cancel)
+        box.setDefaultButton(QMessageBox.Cancel)
+        return box.exec() == QMessageBox.Ok
+
     def _paste_clipboard(self):
-        txt = QApplication.clipboard().text()
-        if txt:
-            self.backend.write(txt.replace("\r\n", "\r").replace("\n", "\r"))
+        """نفس حارس EasyTer: تحذير الأسطر/محارف التحكّم، ثم bracketed paste."""
+        out = guarded_paste(
+            QApplication.clipboard().text(),
+            bracketed=bool(getattr(self.backend, "bracketed_paste", False)),
+            protection=True,
+            confirm=self._confirm_paste,
+        )
+        if out:
+            self.scroll_offset = 0
+            self.backend.write(out)
 
     # ---------- السحب والإفلات (إسقاط الملفّات) ----------
     def dragEnterEvent(self, event):
@@ -698,16 +711,60 @@ class TerminalWidget(QWidget):
                 else:
                     parts.append(url.toString())
         elif md.hasText():
-            parts.append(md.text())
+            text = self._dropped_text(md.text())
+            if not text:
+                event.ignore()
+                return
+            self.setFocus()
+            self.scroll_offset = 0
+            self.backend.write(text)
+            event.acceptProposedAction()
+            return
         if not parts:
             event.ignore()
             return
-        # اقتبس أيّ مسار فيه فراغ أو محرف خاصّ كي يصل سليمًا للصدف
-        chunks = [_quote_shell_path(pth) for pth in parts]
+        # اقتباس مزدوج لمسار عادي. محرف خاص أو شرطة عكسية أخيرة تُقتبس لصدفة
+        # هذا اللوح وتُعرض قبل الكتابة.
+        planned = prepare_dropped_files(parts, self.command)
+        if planned is None:
+            event.ignore()
+            return
+        text, needs_confirm = planned
+        if needs_confirm and not self._confirm_drop(text):
+            event.ignore()
+            return
         self.setFocus()
         self.scroll_offset = 0
-        self.backend.write(" ".join(chunks))
+        self.backend.write(text)
         event.acceptProposedAction()
+
+    def _dropped_text(self, text):
+        """تُحذف محارف التحكّم، ثم يمرّ النص بحارس اللصق."""
+        cleaned = sanitize_dropped_text(text)
+        if cleaned is None:
+            return None
+        return guarded_paste(
+            cleaned,
+            bracketed=bool(getattr(self.backend, "bracketed_paste", False)),
+            protection=True,
+            confirm=self._confirm_paste,
+        )
+
+    def _confirm_drop(self, text):
+        """يعرض النص المقتبس. محارف التنسيق تظهر كـ ``<U+XXXX>``."""
+        shown = (
+            "هذا المسار يحوي محارف صدفة. سيُكتب النص التالي. محارف التنسيق تظهر كـ <U+XXXX>. أدرجه فقط إن كنت تثق به.\n\n"
+            + reveal_format_chars(text))
+        return self._ask_drop(shown)
+
+    def _ask_drop(self, shown):
+        from PySide6.QtWidgets import QMessageBox
+        box = QMessageBox(self)
+        box.setWindowTitle("إدراج نص")
+        box.setText(shown)
+        box.setStandardButtons(QMessageBox.Ok | QMessageBox.Cancel)
+        box.setDefaultButton(QMessageBox.Cancel)
+        return box.exec() == QMessageBox.Ok
 
     def _select_all(self):
         with self.backend.lock:

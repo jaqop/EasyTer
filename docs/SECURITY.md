@@ -73,7 +73,8 @@ at the system drive root instead of that share.
 - **Drive type.** After the gate and before `isdir`, `isfile`, or `open` on
   a terminal-derived path, `GetDriveTypeW` must report a local drive.
   `DRIVE_REMOTE`, `DRIVE_NO_ROOT_DIR`, and `DRIVE_UNKNOWN` are rejected. The
-  result is cached per drive letter.
+  result is cached per drive letter. The root passed to `GetDriveTypeW` is a
+  Python `str` (`c_wchar_p`), not an ANSI string.
 - **Start directory** for new tabs and splits (`resolve_start_dir`), and the
   folder argument on the command line (`start_dir_from_argv`). Relative
   command-line arguments are joined lexically with the process cwd.
@@ -96,5 +97,39 @@ target is a UNC path, and opening it makes Windows authenticate to that
 target. Creating the link requires the symlink privilege (or Developer
 Mode). EasyTer does not create it.
 
-Dragging a file onto the terminal, OSC 52, paste protection, and the
-oh-my-posh prompt are separate from this gate.
+### Input that is not only a path
+
+The path `accept_local_path` returns is a Python `str`. It is passed to
+`GetDriveTypeW` as `c_wchar_p` and to Python's own path functions (`isdir`,
+`isfile`, `open`). It is not encoded with the ANSI code page, and it is not
+passed to an `*A` Win32 API. `bytes` would best-fit.
+
+A dropped file with no shell metacharacter is wrapped in double quotes. A
+backslash is a path separator, not a metacharacter, except when the path
+ends in one (`"C:\"` escapes the closing quote). A metacharacter or a
+trailing backslash is quoted for the pane's shell and shown before it is
+written; the inserted text is that quoted form. Format characters are shown
+on the card as `<U+XXXX>`. A Unicode control character refuses the drop.
+Dropped text is not quoted as a path: newlines become a space, every other
+control character (C0, DEL, and C1) is removed, then the paste guard runs.
+
+`quote_shell_path` is used when the command is known to be PowerShell (the
+oh-my-posh lines). It refuses a control character. PowerShell single quotes
+double `'`, U+2018, U+2019, U+201A, and U+201B, because PowerShell treats all
+five as quotes. cmd still refuses `"` and `%` and a trailing `^`.
+`accept_local_path` is not the quoter: it accepts `'`, `;`, `&`, `$(` and
+backticks.
+
+OSC 52 clipboard writes are off unless `osc52_clipboard` is enabled. When it
+is on, each write asks for confirmation and is limited to 1 MB. An OSC 52
+query is never answered.
+
+Paste in EasyTer Pro uses the same guard as EasyTer: a warning for multi-line
+text, control characters, and large pastes, then bracketed-paste wrapping
+when the program asked for it. ESC and U+009B are removed from the pasted
+text so a nested bracket-end marker cannot close the paste.
+
+The oh-my-posh theme path written into a live PowerShell pane, into a new
+PowerShell tab, and into `$PROFILE` passes the PowerShell quoter above. A
+name that leaves the themes directory is not written. A `$PROFILE` theme
+name has to be a plain filename, and the path is single-quoted.

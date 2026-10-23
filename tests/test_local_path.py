@@ -664,6 +664,7 @@ def test_drive_type_is_cached_per_letter(monkeypatch):
         assert localpath.local_drive_ok(r"c:\b") is True
         assert localpath.local_drive_ok(r"D:\a") is True
         assert calls == ["C:\\", "D:\\"]
+        assert all(isinstance(root, str) for root in calls)
         assert localpath.cached_drive_ok(r"C:\z") is True
         assert localpath.hover_file_reference(r"Z:\share\a.txt") is True
     finally:
@@ -839,3 +840,62 @@ def test_gated_save_keeps_the_arabic_error(qapp):
         assert editor.header.text() != "  ✎ " + i18n.t("editor.untitled")
     finally:
         i18n.set_language("en")
+
+
+def test_accepted_path_stays_on_wide_apis(monkeypatch):
+    import inspect
+    from pathlib import Path
+
+    import EasyTer
+    from easyterpro import localpath
+
+    path = accept_local_path("C:\\Users\\\u0645\u2014\ufb01.txt")
+    assert type(path) is str
+    assert localpath.require_wide_path(path) is path
+    assert "\u0645" in path and "\u2014" in path and "\ufb01" in path
+    with pytest.raises(TypeError):
+        localpath.require_wide_path(path.encode("utf-8"))
+
+    source = inspect.getsource(localpath._query_drive_type)
+    assert "GetDriveTypeW" in source
+    assert "c_wchar_p" in source
+    assert "GetDriveTypeA" not in source
+    module = inspect.getsource(localpath)
+    assert "mbcs" not in module
+
+    seen = []
+    localpath.clear_drive_type_cache()
+    monkeypatch.setattr(localpath, "_query_drive_type", lambda root: seen.append(root) or 3)
+    monkeypatch.setattr(os.path, "isfile", lambda item: seen.append(item) or True)
+    try:
+        assert EasyTer.existing_local_file(path) is True
+    finally:
+        localpath.clear_drive_type_cache()
+    assert seen[0] == "C:\\"
+    assert type(seen[0]) is str
+    assert seen[1] is path
+
+    root = Path(__file__).resolve().parents[1]
+    for rel in ("easyterpro/localpath.py", "EasyTer.py", "easyterpro/window.py"):
+        text = (root / rel).read_text(encoding="utf-8")
+        for banned in (
+            "GetDriveTypeA", "GetFullPathNameA", "CreateFileA", "FindFirstFileA",
+            "GetFileAttributesA", '.encode("mbcs")', ".encode('mbcs')", "fsencode",
+        ):
+            assert banned not in text, (rel, banned)
+
+
+def test_bytes_paths_never_hit_the_filesystem(monkeypatch):
+    import EasyTer
+    from easyterpro import localpath
+
+    def boom(*_args, **_kwargs):
+        raise AssertionError("filesystem")
+
+    monkeypatch.setattr(os.path, "isfile", boom)
+    monkeypatch.setattr(os.path, "isdir", boom)
+    monkeypatch.setattr(os.path, "exists", boom)
+    monkeypatch.setattr(localpath, "_query_drive_type", boom)
+    assert localpath.local_drive_ok(b"C:\\a") is False
+    assert EasyTer.existing_local_file(b"C:\\a\\b.txt") is False
+    assert EasyTer.existing_local_dir(b"C:\\a") is None

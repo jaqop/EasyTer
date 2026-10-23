@@ -10,7 +10,13 @@ stat, open, startfile, or a child process until it has passed through
 ``accept_local_path`` is purely lexical. It does not call the filesystem: on
 Windows those calls are exactly the leak. ``local_drive_ok`` is a separate
 check, used after the gate and before a filesystem call, that rejects drive
-letters ``GetDriveTypeW`` reports as remote, missing, or unknown.
+letters ``GetDriveTypeW`` reports as remote, missing, or unknown. The result
+is cached per drive letter.
+
+The string ``accept_local_path`` returns is a Python ``str``. Callers pass it
+to ``*W`` Win32 APIs or to Python's str path functions. ``bytes`` would be
+handed to an ``*A`` API and best-fit through the ANSI code page.
+``require_wide_path`` is the assertion at that boundary.
 """
 
 import sys
@@ -94,6 +100,21 @@ def clear_drive_type_cache():
     _DRIVE_CACHE.clear()
 
 
+def require_wide_path(path):
+    """Return ``path`` unchanged when it is a ``str``.
+
+    ``bytes`` go to the ANSI code page (best-fit). ``*W`` APIs and Python's
+    path functions take a ``str`` and store it as UTF-16. This does not
+    re-encode the path; it rejects anything that is not already a ``str``.
+    """
+    if not isinstance(path, str):
+        raise TypeError(
+            "local paths must be str for wide-char APIs, not %s" % type(path).__name__
+        )
+    path.encode("utf-16-le", "strict")
+    return path
+
+
 def cached_drive_ok(path):
     """True or False if this drive letter was already classified, else None.
 
@@ -111,6 +132,7 @@ def local_drive_ok(path) -> bool:
 
     The result is cached per drive letter. Call this only after
     ``accept_local_path``, and before ``isdir`` / ``isfile`` / ``open``.
+    The query goes through ``require_wide_path`` and ``GetDriveTypeW``.
     """
     letter = _drive_letter(path)
     if letter is None:
@@ -119,7 +141,7 @@ def local_drive_ok(path) -> bool:
     if cached is not None:
         return cached
     try:
-        kind = _query_drive_type(letter + ":\\")
+        kind = _query_drive_type(require_wide_path(letter + ":\\"))
     except OSError:
         return False
     ok = kind not in _BLOCKED_DRIVE_TYPES
@@ -152,12 +174,17 @@ def _query_drive_type(root):
     """``GetDriveTypeW`` on Windows. Elsewhere every letter is a fixed drive.
 
     Non-Windows hosts have no mapped-drive probe, and the lexical gate is
-    what the unit tests exercise there.
+    what the unit tests exercise there. ``argtypes`` is ``c_wchar_p`` so the
+    root is not passed as an ANSI ``c_char_p`` (best-fit).
     """
     if sys.platform != "win32":
         return DRIVE_FIXED
     import ctypes
-    return int(ctypes.windll.kernel32.GetDriveTypeW(root))
+    root = require_wide_path(root)
+    fn = ctypes.windll.kernel32.GetDriveTypeW
+    fn.argtypes = (ctypes.c_wchar_p,)
+    fn.restype = ctypes.c_uint
+    return int(fn(root))
 
 
 def _percent_decode(text: str) -> Optional[str]:
