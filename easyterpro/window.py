@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """MainWindow — تبويبات (QTabWidget) فوق SplitContainer، مع اختصارات النافذة."""
 
+import ntpath
 import os
 
 from PySide6.QtCore import Qt
@@ -13,7 +14,39 @@ from .panes import SplitContainer
 from .palette import CommandPalette
 from .gallery import AppearanceGallery
 from .config import config
+from .localpath import accept_local_path
 from .profiles import detect_profiles, merge_user_profiles
+from .shellquote import quote_shell_path
+
+
+def live_prompt_command(themes_dir, name):
+    """PowerShell that applies one oh-my-posh theme, or None.
+
+    ``name`` is untrusted until the joined path passes ``accept_local_path``
+    and still sits inside ``themes_dir``. The path is then single-quoted for
+    PowerShell. The gate alone is not enough: it accepts ``'``, ``;``, ``&``,
+    ``$(`` and backticks, which would otherwise be shell syntax.
+    """
+    if not isinstance(name, str) or not isinstance(themes_dir, str):
+        return None
+    if not name or name in (".", ".."):
+        return None
+    if any(ch in name for ch in ("/", "\\", ":", "\x00")):
+        return None
+    theme_path = ntpath.join(themes_dir, name + ".omp.json")
+    accepted = accept_local_path(theme_path)
+    root = accept_local_path(themes_dir)
+    if not accepted or not root:
+        return None
+    prefix = root.rstrip("\\") + "\\"
+    if not accepted.casefold().startswith(prefix.casefold()):
+        return None
+    if ntpath.basename(accepted).casefold() != (name + ".omp.json").casefold():
+        return None
+    quoted = quote_shell_path(accepted, "powershell")
+    if not quoted:
+        return None
+    return "oh-my-posh init pwsh --config %s | Invoke-Expression 2>$null\r" % quoted
 
 
 class MainWindow(QMainWindow):
@@ -93,7 +126,6 @@ class MainWindow(QMainWindow):
 
     def _apply_prompt_live(self, name):
         """يطبّق الموجِّه على صدفة PowerShell النشطة فورًا (بلا فتح تبويب جديد)."""
-        import os
         from . import posh
         label = self.tabs.tabText(self.tabs.currentIndex()).lower()
         if "powershell" not in label and "pwsh" not in label:
@@ -102,11 +134,13 @@ class MainWindow(QMainWindow):
         pane = cont._first_pane() if hasattr(cont, "_first_pane") else None
         if pane is None or not hasattr(pane, "backend"):
             return
-        theme_path = os.path.join(posh.THEMES_DIR, name + ".omp.json")
         # 2>$null: إعادة تهيئة oh-my-posh حيًّا تُطلق أخطاء PSReadLine حميدة على
         # PowerShell 5.1 (Get-PSReadLineKeyHandler نَسَقيّ غير مدعوم) — نكتمها.
-        pane.backend.write(
-            'oh-my-posh init pwsh --config "%s" | Invoke-Expression 2>$null\r' % theme_path)
+        # المسار يمرّ بالبوّابة ثم اقتباس PowerShell حتى لا يُحقن أمر.
+        cmd = live_prompt_command(posh.THEMES_DIR, name)
+        if not cmd:
+            return
+        pane.backend.write(cmd)
 
     def _default_command(self):
         name = self.config.get("default_profile", default="PowerShell")

@@ -164,22 +164,65 @@ def test_osc7_unix_and_bare_windows_paths_are_not_rewritten():
 # ------------------------------------------------------------------ quoting ----
 
 @pytest.mark.parametrize("quote", [EasyTer._quote_shell_path, pro_terminal._quote_shell_path])
-def test_quote_shell_path_wraps_whitespace_only(quote):
-    assert quote(r"C:\plain.txt") == r"C:\plain.txt"
-    assert quote(r"C:\My Documents\a.txt") == r'"C:\My Documents\a.txt"'
-    assert quote("a\tb") == '"a\tb"'
-    assert quote('C:\\My "Files"\\a.txt') == '"C:\\My \\"Files\\"\\a.txt"'
-    # a quote with no whitespace is not wrapped
-    assert quote('C:\\weird"name.txt') == 'C:\\weird"name.txt'
-    assert quote("") == ""
-    # shell metacharacters without whitespace stay bare (whitespace rule only)
-    assert quote(r"C:\a&b.txt") == r"C:\a&b.txt"
+def test_quote_shell_path_matches_the_running_shell(quote):
+    from easyterpro.shellquote import shell_family
+
+    # PowerShell: always single-quoted, embedded quotes doubled.
+    assert quote(r"C:\plain.txt") == r"'C:\plain.txt'"
+    assert quote(r"C:\My Documents\a.txt", "pwsh.exe") == r"'C:\My Documents\a.txt'"
+    assert quote("C:\\it's a $file.txt", "powershell.exe") == r"'C:\it''s a $file.txt'"
+    assert quote(r"C:\a&b;$(whoami)`x.txt", "pwsh") == r"'C:\a&b;$(whoami)`x.txt'"
+    assert quote("a\tb", "powershell") == "'a\tb'"
+    assert quote("C:\\a\r\nb.txt", "powershell.exe") == r"'C:\ab.txt'"
+    assert quote("\r\n", "powershell") is None
+    assert quote("", "powershell") is None
+
+    # cmd: double quotes. & | < > ^ are literal inside them. ! is caret-escaped.
+    # " and % cannot be quoted safely, and a trailing ^ escapes the closer.
+    assert quote(r"C:\plain.txt", "cmd.exe") == r'"C:\plain.txt"'
+    assert quote(r"C:\My Documents\a.txt", "cmd") == r'"C:\My Documents\a.txt"'
+    assert quote(r"C:\a&b|c<d>e^f.txt", "cmd.exe") == r'"C:\a&b|c<d>e^f.txt"'
+    assert quote(r"C:\bang!.txt", "cmd.exe") == r'"C:\bang^!.txt"'
+    assert quote('C:\\a"b.txt', "cmd") is None
+    assert quote(r"C:\100%.txt", "cmd.exe") is None
+    assert quote("C:\\ends^\n", "cmd") is None
+    assert quote("C:\\a\r\nb.txt", "cmd.exe") == r'"C:\ab.txt"'
+
+    # bash / WSL: single quotes, embedded quote as '\'' .
+    assert quote("/mnt/c/it's.txt", "wsl.exe") == "'/mnt/c/it'\\''s.txt'"
+    assert quote("a\rb", r"C:\Program Files\Git\usr\bin\bash.exe") == "'ab'"
+    assert quote(r"C:\a&b.txt", "bash") == r"'C:\a&b.txt'"
+
+    # An unknown shell is not guessed.
+    assert quote(r"C:\a.txt", r"C:\tools\custom.exe") is None
+    assert shell_family("powershell.exe -NoProfile") == "powershell"
+    assert shell_family(["pwsh.exe"]) == "powershell"
+    assert shell_family("cmd.exe /k") == "cmd"
+    assert shell_family(r"C:\Program Files\Git\usr\bin\bash.exe") == "posix"
+    assert shell_family("wsl.exe -d Ubuntu") == "posix"
+    assert shell_family(r"C:\tools\custom.exe") is None
+
+
+def test_local_path_gate_does_not_neutralize_shell_syntax():
+    from easyterpro.localpath import accept_local_path
+    from easyterpro.shellquote import quote_dropped_text
+
+    path = r"C:\a'; & $(calc) `whoami`.txt"
+    assert accept_local_path(path) == path
+    dropped = quote_dropped_text([path, "C:\\ok\r\n"], "powershell.exe")
+    assert dropped == "'C:\\a''; & $(calc) `whoami`.txt' 'C:\\ok'"
+    assert "\r" not in dropped and "\n" not in dropped
+    # one unquotable neighbor refuses the whole drop
+    assert quote_dropped_text([r"C:\ok.txt", r"C:\100%.txt"], "cmd.exe") is None
+    assert quote_dropped_text([r"C:\ok.txt"], "cmd.exe") == r'"C:\ok.txt"'
 
 
 def test_quoted_drop_chunks_join_with_a_space():
+    from easyterpro.shellquote import quote_dropped_text
+
     parts = [r"C:\plain.txt", r"C:\My Documents\a.txt"]
-    joined = " ".join(EasyTer._quote_shell_path(p) for p in parts)
-    assert joined == 'C:\\plain.txt "C:\\My Documents\\a.txt"'
+    assert quote_dropped_text(parts, "powershell.exe") == r"'C:\plain.txt' 'C:\My Documents\a.txt'"
+    assert quote_dropped_text(parts, "cmd.exe") == r'"C:\plain.txt" "C:\My Documents\a.txt"'
 
 
 # -------------------------------------------------------------------- config ----
@@ -335,3 +378,205 @@ def test_easyterpro_config_writes_defaults_then_set_persists(tmp_path, monkeypat
     again = json.loads(path.read_text(encoding="utf-8"))
     assert again["font"]["size"] == 20
     assert again["font"]["family"] == "Consolas"
+
+
+# ------------------------------------------------------- paste and OSC 52 ----
+
+def test_paste_guard_warns_for_multiline_controls_and_size():
+    from easyterpro.pasteguard import PASTE_LARGE, guarded_paste, paste_needs_warning
+
+    assert paste_needs_warning("echo hi") is False
+    assert paste_needs_warning("echo\thi") is False
+    assert paste_needs_warning("a\nb") is True
+    assert paste_needs_warning("a\rb") is True
+    assert paste_needs_warning("a\x1bb") is True
+    assert paste_needs_warning("a" * PASTE_LARGE) is False
+    assert paste_needs_warning("a" * (PASTE_LARGE + 1)) is True
+    assert guarded_paste("a\nb", bracketed=True, protection=True, confirm=lambda _t: False) is None
+    assert guarded_paste("a\nb", bracketed=False, protection=False, confirm=lambda _t: False) == "a\rb"
+    assert guarded_paste("", bracketed=True, protection=True, confirm=lambda _t: True) is None
+    wrapped = guarded_paste("echo hi\necho\x1b[201~calc", bracketed=True, protection=False,
+                            confirm=lambda _t: False)
+    assert wrapped == "\x1b[200~echo hi\recho" + "calc" + "\x1b[201~"
+
+
+def test_easyter_paste_uses_the_same_guard(qapp, monkeypatch):
+    widget = EasyTer.TerminalWidget.__new__(EasyTer.TerminalWidget)
+    written = []
+
+    class Backend:
+        bracketed_paste = False
+
+        def write(self, text):
+            written.append(text)
+
+    widget.backend = Backend()
+    widget.read_only = False
+    monkeypatch.setitem(EasyTer.SETTINGS, "paste_protection", True)
+    qapp.clipboard().setText("only-tab\there")
+    widget._confirm_paste = lambda text: (_ for _ in ()).throw(AssertionError(text))
+    widget._do_paste()
+    assert written == ["only-tab\there"]
+
+    written.clear()
+    qapp.clipboard().setText("a\nb")
+    widget._confirm_paste = lambda _text: False
+    widget._do_paste()
+    assert written == []
+    widget.read_only = True
+    widget._confirm_paste = lambda _text: True
+    widget._do_paste()
+    assert written == []
+
+
+def test_pro_paste_uses_the_same_guard(qapp):
+    widget = pro_terminal.TerminalWidget.__new__(pro_terminal.TerminalWidget)
+    written = []
+
+    class Backend:
+        bracketed_paste = True
+
+        def write(self, text):
+            written.append(text)
+
+    widget.backend = Backend()
+    widget.scroll_offset = 4
+    qapp.clipboard().setText("echo hi")
+    widget._confirm_paste = lambda text: (_ for _ in ()).throw(AssertionError(text))
+    widget._paste_clipboard()
+    assert written == ["\x1b[200~echo hi\x1b[201~"]
+    assert widget.scroll_offset == 0
+
+    written.clear()
+    widget.scroll_offset = 2
+    qapp.clipboard().setText("echo hi\r\necho there")
+    widget._confirm_paste = lambda _text: False
+    widget._paste_clipboard()
+    assert written == []
+
+    widget._confirm_paste = lambda _text: True
+    qapp.clipboard().setText("echo hi\necho there\x1b[201~calc")
+    widget._paste_clipboard()
+    assert written == ["\x1b[200~echo hi\recho therecalc\x1b[201~"]
+
+    written.clear()
+    widget.backend.bracketed_paste = False
+    qapp.clipboard().setText("ping\x1b")
+    widget._confirm_paste = lambda _text: False
+    widget._paste_clipboard()
+    assert written == []
+    widget._confirm_paste = lambda _text: True
+    widget._paste_clipboard()
+    assert written == ["ping\x1b"]
+
+
+def test_pro_backend_tracks_bracketed_paste():
+    from easyterpro.backend import PtyBackend
+
+    backend = PtyBackend.__new__(PtyBackend)
+    backend.alt_screen = False
+    backend.bracketed_paste = False
+    backend._scan_tail = ""
+    backend.alt_screen_changed = type("Sig", (), {"emit": staticmethod(lambda *_a: None)})()
+    backend._scan_alt("ready\x1b[?2004h")
+    assert backend.bracketed_paste is True
+    backend._scan_alt("\x1b[?2004l")
+    assert backend.bracketed_paste is False
+
+
+def test_osc52_write_is_off_until_enabled(monkeypatch):
+    backend = EasyTer.PtyBackend.__new__(EasyTer.PtyBackend)
+    emitted = []
+    written = []
+    backend.clipboard_set = type("Sig", (), {"emit": staticmethod(lambda text: emitted.append(text))})()
+    backend.write = lambda text: written.append(text)
+    payload = base64.b64encode("hello".encode()).decode("ascii")
+    sequence = "\x1b]52;c;" + payload + "\x07"
+    monkeypatch.setitem(EasyTer.SETTINGS, "osc52_clipboard", False)
+    backend._scan_osc52(sequence)
+    assert emitted == []
+    assert written == []
+    monkeypatch.setitem(EasyTer.SETTINGS, "osc52_clipboard", True)
+    backend._scan_osc52(sequence)
+    assert emitted == ["hello"]
+    assert written == []
+
+
+def test_osc52_confirm_size_and_one_dialog(qapp, monkeypatch):
+    widget = EasyTer.TerminalWidget.__new__(EasyTer.TerminalWidget)
+    widget._osc52_confirm_open = False
+    monkeypatch.setitem(EasyTer.SETTINGS, "osc52_clipboard", False)
+    qapp.clipboard().setText("original")
+    widget._on_osc52("copied")
+    assert qapp.clipboard().text() == "original"
+
+    monkeypatch.setitem(EasyTer.SETTINGS, "osc52_clipboard", True)
+    monkeypatch.setattr(EasyTer, "confirm_osc52", lambda *_a, **_k: False)
+    widget._on_osc52("copied")
+    assert qapp.clipboard().text() == "original"
+
+    monkeypatch.setattr(EasyTer, "confirm_osc52", lambda *_a, **_k: True)
+    widget._on_osc52("copied")
+    assert qapp.clipboard().text() == "copied"
+
+    widget._on_osc52("x" * (EasyTer.OSC52_MAX_BYTES + 1))
+    assert qapp.clipboard().text() == "copied"
+
+    nested = []
+
+    def confirm(parent, text):
+        nested.append(text)
+        widget._on_osc52("second")
+        return True
+
+    monkeypatch.setattr(EasyTer, "confirm_osc52", confirm)
+    widget._on_osc52("first")
+    assert nested == ["first"]
+    assert qapp.clipboard().text() == "first"
+
+    exact = b"A" * EasyTer.OSC52_MAX_BYTES
+    assert EasyTer._decode_osc52(base64.b64encode(exact).decode("ascii")) == "A" * EasyTer.OSC52_MAX_BYTES
+    over = b"A" * (EasyTer.OSC52_MAX_BYTES + 1)
+    assert EasyTer._decode_osc52(base64.b64encode(over).decode("ascii")) is None
+    assert EasyTer._decode_osc52("?") is None
+
+
+def test_osc52_query_does_not_read_or_reply(qapp, monkeypatch):
+    qapp.clipboard().setText("secret")
+    backend = EasyTer.PtyBackend.__new__(EasyTer.PtyBackend)
+    emitted = []
+    written = []
+    backend.clipboard_set = type("Sig", (), {"emit": staticmethod(lambda text: emitted.append(text))})()
+    backend.write = lambda text: written.append(text)
+    monkeypatch.setitem(EasyTer.SETTINGS, "osc52_clipboard", True)
+    backend._scan_osc52("\x1b]52;c;?\x07")
+    backend._scan_osc52("\x1b]52;;?\x1b\\")
+    backend._scan_osc52("\x1b]52;p;?\x07")
+    assert written == []
+    assert emitted == []
+    assert qapp.clipboard().text() == "secret"
+    assert backend._osc52_query_reply("\x1b]52;c;?\x07") is None
+
+
+def test_live_prompt_command_is_gated_and_quoted():
+    from easyterpro.window import live_prompt_command
+
+    themes = r"C:\Users\me\.poshthemes"
+    cmd = live_prompt_command(themes, "kali")
+    assert cmd == (
+        "oh-my-posh init pwsh --config "
+        r"'C:\Users\me\.poshthemes\kali.omp.json' | Invoke-Expression 2>$null" + "\r"
+    )
+    injected = live_prompt_command(themes, "kali'; calc #")
+    assert injected is not None
+    assert injected.startswith("oh-my-posh init pwsh --config '")
+    assert "''" in injected
+    head, _, tail = injected.partition("| Invoke-Expression")
+    assert head.endswith("' ")
+    assert "calc" in head
+    assert tail == " 2>$null\r"
+    assert live_prompt_command(themes, "..\\..\\Windows\\System32\\calc") is None
+    assert live_prompt_command(r"\\evil\share", "kali") is None
+    assert live_prompt_command(themes, "kali\r\ncalc") is None
+    assert live_prompt_command(themes, 'ka"li') is None
+    assert live_prompt_command("/home/me/.poshthemes", "kali") is None

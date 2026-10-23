@@ -32,8 +32,11 @@ import webbrowser
 
 from easyterpro.localpath import (
     accept_local_path, cached_drive_ok, hover_file_reference, local_drive_ok,
-    osc7_host_ok,
+    osc7_host_ok, require_wide_path,
 )
+from easyterpro.pasteguard import guarded_paste
+from easyterpro.shellquote import quote_dropped_text
+from easyterpro.shellquote import quote_shell_path as _quote_shell_path  # noqa: F401
 
 
 # --- Optional startup/paint profiling (set EASYTER_PROFILE=1) --------------
@@ -169,8 +172,12 @@ OSC99_RE = re.compile(r'\x1b\]9;9;"?([^"\x07\x1b]+)"?(?:\x07|\x1b\\)')
 OSC7_RE = re.compile(
     r"\x1b\]7;file://(?P<host>[^/\x07\x1b]*)(?P<path>/[^\x07\x1b]*)(?:\x07|\x1b\\)"
 )
-# OSC 52: a program sets the system clipboard (e.g. yank in vim over SSH). Write-only.
+# OSC 52: a program sets the system clipboard (e.g. yank in vim over SSH).
+# Writes are off unless osc52_clipboard is enabled, and each one is confirmed.
+# A query (payload "?") is never answered: the clipboard is not read back.
+OSC52_MAX_BYTES = 1024 * 1024
 OSC52_RE = re.compile(r"\x1b\]52;[cpqs0-7]*;([A-Za-z0-9+/=]+)(?:\x07|\x1b\\)")
+OSC52_QUERY_RE = re.compile(r"\x1b\]52;[^;\x07\x1b]*;\?(?:\x07|\x1b\\)")
 # OSC 6969 (EasyTer-private): the shell's `edit <file>` command asks EasyTer to
 # open a path in the embedded editor pane. pyte discards the unknown OSC, so it
 # never shows as garbage; we scan the raw stream for it, like the OSCs above.
@@ -332,7 +339,8 @@ SETTINGS = {
     "notify_on_finish": True,  # desktop notification when a long command finishes unfocused
     "busy_dot": True,          # show a dot on a background tab while it is producing output
     "quake_enabled": True,     # global hotkey (Ctrl+Alt+`) to summon/hide EasyTer from anywhere
-    "paste_protection": True,  # confirm before pasting multi-line / large clipboard text
+    "paste_protection": True,  # confirm before pasting multi-line / control-character text
+    "osc52_clipboard": False,  # OSC 52 may set the clipboard only after a per-request confirm
     "scrollback": 10000,       # lines of history kept per terminal
     "favorite_themes": [],     # themes hearted in the appearance gallery (shown first)
     "prompt_theme": "",        # chosen oh-my-posh prompt theme (.omp.json); applied to new tabs
@@ -349,6 +357,7 @@ def existing_local_dir(path):
     if not accepted or not local_drive_ok(accepted):
         return None
     try:
+        accepted = require_wide_path(accepted)
         if os.path.isdir(accepted):
             return accepted
     except OSError:
@@ -365,6 +374,7 @@ def existing_local_file(path):
     if not isinstance(path, str) or not local_drive_ok(path):
         return False
     try:
+        path = require_wide_path(path)
         return os.path.isfile(path)
     except OSError:
         return False
@@ -1213,6 +1223,41 @@ class ReportingScreen(pyte.HistoryScreen):
                 pass
 
 
+def _decode_osc52(payload):
+    """UTF-8 text from an OSC 52 write body, or None when it is not a write.
+
+    Queries (``?``) and payloads over ``OSC52_MAX_BYTES`` are None. The size
+    check runs on the base64 length before ``b64decode`` allocates the bytes.
+    """
+    if not isinstance(payload, str) or not payload or payload == "?":
+        return None
+    # 4 base64 characters encode 3 bytes, plus a few characters of padding.
+    if len(payload) > (OSC52_MAX_BYTES // 3) * 4 + 8:
+        return None
+    import base64
+    try:
+        raw = base64.b64decode(payload, validate=False)
+    except Exception:
+        return None
+    if not raw or len(raw) > OSC52_MAX_BYTES:
+        return None
+    text = raw.decode("utf-8", "replace")
+    if len(text.encode("utf-8")) > OSC52_MAX_BYTES:
+        return None
+    return text
+
+
+def confirm_osc52(parent, text):
+    """Confirm one OSC 52 clipboard write. The clipboard text is not shown."""
+    from PySide6.QtWidgets import QMessageBox
+    box = QMessageBox(parent)
+    box.setWindowTitle(i18n.t("osc52.title"))
+    box.setText(i18n.t("osc52.confirm", chars=len(text)))
+    box.setStandardButtons(QMessageBox.Ok | QMessageBox.Cancel)
+    box.setDefaultButton(QMessageBox.Cancel)
+    return box.exec() == QMessageBox.Ok
+
+
 class PtyBackend(QObject):
     """A live ConPTY session + a pyte screen emulator."""
 
@@ -1288,7 +1333,7 @@ class PtyBackend(QObject):
         # current tab's directory), else the configured start folder, else home —
         # never inheriting whatever launched EasyTer (often C:\Windows\system32).
         # start_cwd is often an OSC working directory, so it is gated before isdir.
-        start_dir = resolve_start_dir(start_cwd)
+        start_dir = require_wide_path(resolve_start_dir(start_cwd))
         # Spawning can fail (a saved session points at an uninstalled shell — WSL
         # removed, a renamed Git Bash path, a bad command). Under pythonw stderr is
         # swallowed, so an uncaught error here means the window never appears. Keep
@@ -1534,6 +1579,7 @@ class PtyBackend(QObject):
         if not accepted or not local_drive_ok(accepted):
             return
         try:
+            accepted = require_wide_path(accepted)
             if os.path.isdir(accepted) and accepted != self.cwd:
                 self.cwd = accepted
                 self.cwd_changed.emit(accepted)
@@ -1554,16 +1600,30 @@ class PtyBackend(QObject):
             if accepted:
                 self.edit_file.emit(accepted)
 
+    def _osc52_query_reply(self, _data):
+        """OSC 52 read/query is never answered.
+
+        Returning the clipboard would let a program in the pane (or anything
+        that can write to it) read what the user copied. There is no reply.
+        """
+        return None
+
     def _scan_osc52(self, data):
-        """A program set the clipboard via OSC 52 (write-only; queries ignored)."""
+        """A program asked to set the clipboard via OSC 52.
+
+        Queries are not answered. Writes are ignored unless the setting is on,
+        and a payload larger than ``OSC52_MAX_BYTES`` is dropped before it is
+        emitted. The widget confirms each emitted write; this method does not
+        touch the clipboard and does not write back to the shell.
+        """
         if "\x1b]52;" not in data:
             return
-        import base64
+        if OSC52_QUERY_RE.search(data):
+            self._osc52_query_reply(data)
+        if not SETTINGS.get("osc52_clipboard", False):
+            return
         for m in OSC52_RE.finditer(data):
-            try:
-                txt = base64.b64decode(m.group(1)).decode("utf-8", "replace")
-            except Exception:
-                continue
+            txt = _decode_osc52(m.group(1))
             if txt:
                 self.clipboard_set.emit(txt)
 
@@ -1650,17 +1710,6 @@ class PtyBackend(QObject):
 
     def close(self):
         self._release()
-
-
-def _quote_shell_path(path):
-    """Quote a dropped path so the shell receives it as one argument.
-
-    Paths that contain a space or a tab are wrapped in double quotes, and a
-    double quote already inside the path is escaped with a backslash. Any
-    other path is returned unchanged."""
-    if any(ws in path for ws in (" ", "\t")):
-        return '"' + path.replace('"', '\\"') + '"'
-    return path
 
 
 class TerminalWidget(QWidget):
@@ -1763,6 +1812,13 @@ class TerminalWidget(QWidget):
         self._exited = False
         self._edit_confirm_open = False
         self._edit_confirm_not_before = 0.0
+        self._osc52_confirm_open = False
+        self._hover_exists = {}
+        self._hover_exists_path = None
+        self._hover_pos = None
+        self._hover_exists_timer = QTimer(self)
+        self._hover_exists_timer.setSingleShot(True)
+        self._hover_exists_timer.timeout.connect(self._refresh_hover_exists)
         self._start_backend(self.command)
 
         self.resize(int(self.cols * self.cw), self.rows * self.ch)
@@ -1774,8 +1830,7 @@ class TerminalWidget(QWidget):
         self.backend.exited.connect(self._on_exit)
         self.backend.alt_screen_changed.connect(self._on_alt_screen)
         self.backend.command_ended.connect(self._on_command_ended)
-        self.backend.clipboard_set.connect(
-            lambda txt: QApplication.clipboard().setText(txt))
+        self.backend.clipboard_set.connect(self._on_osc52)
         self.backend.cwd_changed.connect(self._on_cwd_changed)
         self.backend.cmd_changed.connect(self._on_cmd_changed)
         self.backend.edit_file.connect(self._on_edit_file)
@@ -2909,9 +2964,65 @@ class TerminalWidget(QWidget):
         return None
 
     def _hover_file(self, pos):
-        """True when Ctrl+hover may show the hand cursor. No filesystem call."""
+        """True when Ctrl+hover may show the hand cursor.
+
+        The existence answer comes from ``_hover_exists``, filled by
+        ``_refresh_hover_exists`` off the mouse-move path. A path that has
+        not been checked, or that does not exist, does not get the hand.
+        This method does not call ``isfile`` or ``GetDriveTypeW``.
+        """
         hit = self._file_candidate(pos)
-        return bool(hit) and hover_file_reference(hit[0])
+        if not hit or not hover_file_reference(hit[0]):
+            return False
+        path = hit[0]
+        cache = getattr(self, "_hover_exists", None)
+        if isinstance(cache, dict) and path in cache:
+            return bool(cache[path])
+        self._schedule_hover_exists(path)
+        return False
+
+    def _schedule_hover_exists(self, path):
+        """Debounce one existence check. No filesystem call here."""
+        cache = getattr(self, "_hover_exists", None)
+        if isinstance(cache, dict) and path in cache:
+            return
+        timer = getattr(self, "_hover_exists_timer", None)
+        if timer is None:
+            return
+        self._hover_exists_path = path
+        timer.start(50)
+
+    def _refresh_hover_exists(self):
+        """Stat the path the pointer rested on. Not called from mouse move."""
+        path = getattr(self, "_hover_exists_path", None)
+        if not isinstance(path, str) or not path:
+            return
+        cache = getattr(self, "_hover_exists", None)
+        if not isinstance(cache, dict):
+            cache = {}
+            self._hover_exists = cache
+        if path not in cache:
+            if cached_drive_ok(path) is False:
+                found = False
+            else:
+                try:
+                    found = bool(existing_local_file(path))
+                except Exception:
+                    found = False
+            if len(cache) > 64:
+                cache.clear()
+            cache[path] = found
+        self._sync_hover_cursor()
+
+    def _sync_hover_cursor(self):
+        pos = getattr(self, "_hover_pos", None)
+        if pos is None or QApplication.instance() is None:
+            return
+        if (QApplication.keyboardModifiers() & Qt.ControlModifier) and (
+                self._url_at(pos) or self._hover_file(pos)):
+            self.setCursor(Qt.PointingHandCursor)
+        else:
+            self.unsetCursor()
 
     def _open_in_editor(self, path, line=None):
         """Open the file in this session's editor pane (Ctrl+click a path).
@@ -2953,6 +3064,7 @@ class TerminalWidget(QWidget):
             self.update()
 
     def mouseMoveEvent(self, event):
+        self._hover_pos = event.position()
         if event.buttons() & Qt.LeftButton and self.sel_anchor is not None:
             self.sel_point = self._pos_to_cell(event.position())
             self.update()
@@ -3356,37 +3468,62 @@ class TerminalWidget(QWidget):
         if not parts:
             event.ignore()
             return
-        # quote any path containing whitespace so it reaches the shell intact
-        chunks = [_quote_shell_path(pth) for pth in parts]
+        # Quote for the shell in this pane. Newlines are stripped, and a path
+        # that cannot be quoted (cmd " or %) refuses the whole drop.
+        text = quote_dropped_text(parts, self.command)
+        if not text:
+            event.ignore()
+            return
         self.setFocus()
         self.scroll_offset = 0
-        self.backend.write(" ".join(chunks))
+        self.backend.write(text)
         event.acceptProposedAction()
 
-    def _do_paste(self):
-        """Paste the clipboard, with optional protection (confirm multi-line/large
-        pastes) and bracketed-paste wrapping so the shell won't auto-run lines."""
-        txt = QApplication.clipboard().text()
-        if not txt or self.read_only:
+    def _confirm_paste(self, text):
+        from PySide6.QtWidgets import QMessageBox
+        lines = text.count("\n") + (0 if text.endswith("\n") else 1)
+        box = QMessageBox(self)
+        box.setWindowTitle(i18n.t("paste.title"))
+        box.setText(i18n.t("paste.warn", lines=lines, chars=len(text)))
+        box.setStandardButtons(QMessageBox.Ok | QMessageBox.Cancel)
+        box.setDefaultButton(QMessageBox.Cancel)
+        return box.exec() == QMessageBox.Ok
+
+    def _on_osc52(self, txt):
+        """Confirm one OSC 52 write, then set the clipboard. Queries never arrive."""
+        if not SETTINGS.get("osc52_clipboard", False):
             return
-        if SETTINGS.get("paste_protection", True) and ("\n" in txt.strip() or len(txt) > 2000):
-            from PySide6.QtWidgets import QMessageBox
-            lines = txt.count("\n") + (0 if txt.endswith("\n") else 1)
-            box = QMessageBox(self)
-            box.setWindowTitle(i18n.t("paste.title"))
-            box.setText(i18n.t("paste.warn", lines=lines, chars=len(txt)))
-            box.setStandardButtons(QMessageBox.Ok | QMessageBox.Cancel)
-            box.setDefaultButton(QMessageBox.Cancel)
-            if box.exec() != QMessageBox.Ok:
-                return
-        body = txt.replace("\r\n", "\r").replace("\n", "\r")
-        if self.backend.bracketed_paste:
-            # strip any embedded end-marker so pasted content can't terminate paste
-            # mode early and smuggle the remainder in as executed input
-            body = body.replace("\x1b[201~", "")
-            self.backend.write("\x1b[200~" + body + "\x1b[201~")
-        else:
-            self.backend.write(body)
+        if not isinstance(txt, str) or not txt:
+            return
+        if len(txt.encode("utf-8")) > OSC52_MAX_BYTES:
+            return
+        if getattr(self, "_osc52_confirm_open", False):
+            return
+        self._osc52_confirm_open = True
+        try:
+            ok = confirm_osc52(self, txt)
+        finally:
+            self._osc52_confirm_open = False
+        if ok:
+            QApplication.clipboard().setText(txt)
+
+    def _do_paste(self):
+        """Paste the clipboard through the shared guard.
+
+        Multi-line, oversized, and control-character pastes are confirmed.
+        Bracketed-paste wrapping is applied when the program asked for it, so
+        the shell will not run the pasted lines on its own.
+        """
+        if self.read_only:
+            return
+        out = guarded_paste(
+            QApplication.clipboard().text(),
+            bracketed=bool(getattr(self.backend, "bracketed_paste", False)),
+            protection=bool(SETTINGS.get("paste_protection", True)),
+            confirm=self._confirm_paste,
+        )
+        if out:
+            self.backend.write(out)
 
     def _select_all(self):
         with self.backend.lock:
@@ -3772,6 +3909,10 @@ class SettingsDialog(QDialog):
         self.busy_dot_chk.setChecked(bool(SETTINGS.get("busy_dot", True)))
         g.addWidget(self.busy_dot_chk, 12, 0, 1, 2)
 
+        self.osc52_chk = QCheckBox(i18n.t("settings.osc52"))
+        self.osc52_chk.setChecked(bool(SETTINGS.get("osc52_clipboard", False)))
+        g.addWidget(self.osc52_chk, 13, 0, 1, 2)
+
         # fixed button bar below the scroll area (always visible)
         btns = QHBoxLayout()
         btns.setContentsMargins(16, 8, 16, 12)
@@ -3891,6 +4032,7 @@ class SettingsDialog(QDialog):
         SETTINGS["start_dir"] = self.start_dir
         SETTINGS["cursor_style"] = self.cursor_combo.currentData()
         SETTINGS["busy_dot"] = self.busy_dot_chk.isChecked()
+        SETTINGS["osc52_clipboard"] = self.osc52_chk.isChecked()
         save_settings()
         i18n.set_language(SETTINGS["language"])   # live: menus/dialogs/shortcuts switch on next open
         apply_base_colors()
@@ -4598,6 +4740,7 @@ class EditorWidget(QWidget):
             return
         self._user_chosen = False
         try:
+            accepted = require_wide_path(accepted)
             exists = os.path.exists(accepted)
         except OSError:
             return
@@ -4621,6 +4764,7 @@ class EditorWidget(QWidget):
         if not target:
             return
         try:
+            target = require_wide_path(target)
             with open(target, encoding="utf-8", errors="replace") as fh:
                 data = fh.read()
             # disable repaints during the bulk insert: much faster for big files
@@ -4655,6 +4799,7 @@ class EditorWidget(QWidget):
             # interrupted write (disk full, dropped network drive) can't destroy the
             # original file the way truncating it with open(..., "w") would.
             # dirname is lexical; abspath would call GetFullPathName on Windows.
+            target = require_wide_path(target)
             d = ntpath.dirname(target) or target
             fd, tmp = tempfile.mkstemp(dir=d, prefix=".easyter-", suffix=".tmp")
             try:

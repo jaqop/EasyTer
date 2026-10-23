@@ -67,13 +67,16 @@ at the system drive root instead of that share.
   has its line suffix removed and its `/` converted to `\` before it is
   joined with the shell cwd. `~/x.py` is expanded against the home directory.
   The joined path is gated, and only then passed to `isfile`. Moving the
-  mouse with Ctrl held does not call `isfile` or `GetDriveTypeW`; the hand
-  cursor uses the lexical result only. A drive letter already known to be
-  remote, missing, or unknown is not hoverable.
-- **Drive type.** After the gate and before `isdir`, `isfile`, or `open` on
-  a terminal-derived path, `GetDriveTypeW` must report a local drive.
-  `DRIVE_REMOTE`, `DRIVE_NO_ROOT_DIR`, and `DRIVE_UNKNOWN` are rejected. The
-  result is cached per drive letter.
+  mouse with Ctrl held does not call `isfile` or `GetDriveTypeW`. The hand
+  cursor is shown only when a check run off that path has already found that
+  the file exists. A missing file does not get the hand. A drive letter
+  already known to be remote, missing, or unknown is not hoverable.
+- **Drive type.** After the gate and immediately before `isdir`, `isfile`,
+  or `open` on a terminal-derived path, `GetDriveTypeW` is called fresh and
+  must report a local drive. `DRIVE_REMOTE`, `DRIVE_NO_ROOT_DIR`, and
+  `DRIVE_UNKNOWN` are rejected. A per-letter cache is kept for hover hints
+  only and is not consulted for that decision, so a letter that is later
+  mapped to a share cannot be touched on the strength of an old answer.
 - **Start directory** for new tabs and splits (`resolve_start_dir`), and the
   folder argument on the command line (`start_dir_from_argv`). Relative
   command-line arguments are joined lexically with the process cwd.
@@ -96,5 +99,28 @@ target is a UNC path, and opening it makes Windows authenticate to that
 target. Creating the link requires the symlink privilege (or Developer
 Mode). EasyTer does not create it.
 
-Dragging a file onto the terminal, OSC 52, paste protection, and the
-oh-my-posh prompt are separate from this gate.
+### Input that is not only a path
+
+The path `accept_local_path` returns is a Python `str`. It is passed to
+`GetDriveTypeW` as `c_wchar_p` and to Python's own path functions (`isdir`,
+`isfile`, `open`). It is not encoded with the ANSI code page, and it is not
+passed to an `*A` Win32 API. `bytes` would best-fit.
+
+Drag-and-drop is quoted for the shell in that pane. PowerShell and pwsh use
+single quotes with an embedded quote doubled. cmd uses double quotes, writes
+`!` as `^!`, and refuses a path that contains `"` or `%` or ends in `^`.
+bash and WSL use single quotes with `'\''`. `accept_local_path` is not the
+quoter: it accepts `'`, `;`, `&`, `$(` and backticks. Carriage return and
+line feed are stripped so a drop cannot submit a command.
+
+OSC 52 clipboard writes are off unless `osc52_clipboard` is enabled. When it
+is on, each write asks for confirmation and is limited to 1 MB. An OSC 52
+query is never answered.
+
+Paste in EasyTer Pro uses the same guard as EasyTer: a warning for multi-line
+text, control characters, and large pastes, then bracketed-paste wrapping
+when the program asked for it.
+
+The oh-my-posh theme path written into a live PowerShell pane passes
+`accept_local_path` and is single-quoted. A name that leaves the themes
+directory is not written.
