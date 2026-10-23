@@ -683,36 +683,81 @@ def _drop_widget(cls, bracketed=False):
 
 
 def test_file_drop_confirms_shell_specials_instead_of_guessing():
-    from easyterpro.shellquote import prepare_dropped_files
+    from easyterpro.shellquote import _SHELL_SPECIAL, prepare_dropped_files, quote_shell_path
 
-    assert prepare_dropped_files(["notes.txt"]) == ('"notes.txt"', False)
-    assert prepare_dropped_files(["my file.txt"]) == ('"my file.txt"', False)
-    assert prepare_dropped_files([r"C:\a$(whoami).txt"]) == (r"C:\a$(whoami).txt", True)
-    assert prepare_dropped_files(["a\x15touch"]) is None
-    assert prepare_dropped_files(["notes.txt", "a\x0fb"]) is None
+    assert prepare_dropped_files(["notes.txt"], "cmd.exe") == ('"notes.txt"', False)
+    assert prepare_dropped_files(["my file.txt"], "pwsh.exe") == ('"my file.txt"', False)
+    assert prepare_dropped_files([r"C:\Users\me\a b.txt"], "powershell") == (
+        '"C:\\Users\\me\\a b.txt"', False)
+    assert prepare_dropped_files([r"C:\Users\me\a b.txt"], "cmd.exe") == (
+        '"C:\\Users\\me\\a b.txt"', False)
+    assert "\\" not in _SHELL_SPECIAL
+    assert _SHELL_SPECIAL == frozenset(_DROP_SPECIALS)
+    assert prepare_dropped_files(["a\x15touch"], "powershell") is None
+    assert prepare_dropped_files(["notes.txt", "a\x0fb"], "cmd") is None
 
     path = r"C:\a$(whoami).txt"
+    quoted_cmd = quote_shell_path(path, "cmd.exe")
+    assert quoted_cmd == '"C:\\a$(whoami).txt"'
+    assert prepare_dropped_files([path], "cmd.exe") == (quoted_cmd, True)
+    quoted_ps = quote_shell_path(path, "powershell.exe")
+    assert prepare_dropped_files([path], "powershell.exe") == (quoted_ps, True)
+    assert quoted_ps.startswith("'") and quoted_ps != path
+    assert prepare_dropped_files(["C:\\"], "powershell") == ("'C:\\'", True)
+    assert prepare_dropped_files(["C:\\"], "cmd.exe") == ('"C:\\"', True)
+    assert prepare_dropped_files(["100%"], "cmd.exe") is None
+
     for cls in (EasyTer.TerminalWidget, pro_terminal.TerminalWidget):
         widget, written = _drop_widget(cls)
         seen = []
         widget._confirm_drop = lambda text, _seen=seen: _seen.append(text) or False
         event = _DropEvent(_DropMime(urls=[_DropUrl(path)]))
         widget.dropEvent(event)
-        assert seen == [path]
+        assert seen == [quoted_cmd]
         assert written == []
         assert event.ignored
 
-        widget._confirm_drop = lambda text: text == path
+        widget._confirm_drop = lambda text: text == quoted_cmd
         event = _DropEvent(_DropMime(urls=[_DropUrl(path)]))
         widget.dropEvent(event)
-        assert written == [path]
+        assert written == [quoted_cmd]
         assert event.accepted
 
-        widget._confirm_drop = lambda text: (_ for _ in ()).throw(AssertionError(text))
-        event = _DropEvent(_DropMime(urls=[_DropUrl("notes.txt")]))
+        widget.command = "powershell.exe"
+        widget._confirm_drop = lambda text, _seen=seen: _seen.append(text) or True
+        event = _DropEvent(_DropMime(urls=[_DropUrl(path)]))
         widget.dropEvent(event)
-        assert written[-1] == '"notes.txt"'
+        assert written[-1] == quoted_ps
+
+        widget.command = "cmd.exe"
+        widget._confirm_drop = lambda text: (_ for _ in ()).throw(AssertionError(text))
+        event = _DropEvent(_DropMime(urls=[_DropUrl(r"C:\Users\me\a b.txt")]))
+        widget.dropEvent(event)
+        assert written[-1] == '"C:\\Users\\me\\a b.txt"'
         assert event.accepted
+
+
+# Hard-coded so deleting one character from _SHELL_SPECIAL fails its own case.
+# A path may contain only that character: a neighbor such as "(" must not keep
+# the "$" case green.
+_DROP_SPECIALS = (
+    "$", "'", '"', "%", "!", "^", "&", "|", "<", ">", ";", "(", ")", "`",
+    "\u2018", "\u2019", "\u201a", "\u201b",
+    "\u201c", "\u201d", "\u201e", "\u201f",
+)
+
+
+@pytest.mark.parametrize("ch", _DROP_SPECIALS, ids=lambda ch: "U+%04X" % ord(ch))
+def test_each_shell_special_opens_the_confirm_card(ch):
+    from easyterpro.shellquote import prepare_dropped_files, quote_shell_path
+
+    path = "a" + ch + "b.txt"
+    planned = prepare_dropped_files([path], "powershell")
+    assert planned == (quote_shell_path(path, "powershell"), True)
+    text, needs_confirm = planned
+    assert needs_confirm is True
+    assert text != path
+    assert text.startswith("'") and text.endswith("'")
 
 
 def test_dropped_text_strips_controls_and_uses_the_paste_guard(monkeypatch):
@@ -737,6 +782,61 @@ def test_dropped_text_strips_controls_and_uses_the_paste_guard(monkeypatch):
         assert written == []
         assert event.ignored
 
+        written.clear()
+        event = _DropEvent(_DropMime(text="a\nb"))
+        widget.dropEvent(event)
+        assert written == ["\x1b[200~a b\x1b[201~"]
+
+        written.clear()
+        event = _DropEvent(_DropMime(text="a\r\nb\x85c\x9bd\x7fe"))
+        widget.dropEvent(event)
+        assert written == ["\x1b[200~a bcde\x1b[201~"]
+        assert "\x85" not in written[0] and "\x9b" not in written[0] and "\x7f" not in written[0]
+
+
+def test_easyter_drop_text_guard_can_cancel(monkeypatch):
+    from easyterpro.pasteguard import PASTE_LARGE
+
+    widget, written = _drop_widget(EasyTer.TerminalWidget, bracketed=False)
+    monkeypatch.setitem(EasyTer.SETTINGS, "paste_protection", True)
+    widget._confirm_paste = lambda text: False
+    blob = "Z" * (PASTE_LARGE + 1)
+    event = _DropEvent(_DropMime(text=blob))
+    widget.dropEvent(event)
+    assert written == []
+    assert event.ignored
+
+    widget._confirm_paste = lambda text: True
+    event = _DropEvent(_DropMime(text=blob))
+    widget.dropEvent(event)
+    assert written == [blob]
+
+
+def test_confirm_card_shows_format_chars_as_escapes():
+    from easyterpro.shellquote import reveal_format_chars
+
+    points = (
+        list(range(0x202A, 0x202F))
+        + list(range(0x2066, 0x206A))
+        + list(range(0x200B, 0x2010))
+        + [0xFEFF, 0x061C]
+    )
+    for cp in points:
+        ch = chr(cp)
+        shown = reveal_format_chars("x" + ch + "y")
+        assert shown == "x<U+%04X>y" % cp
+        assert ch not in shown
+
+    raw = "a\u202e;b"
+    for cls in (EasyTer.TerminalWidget, pro_terminal.TerminalWidget):
+        widget, _written = _drop_widget(cls)
+        seen = []
+        widget._ask_drop = lambda shown, _seen=seen: _seen.append(shown) or False
+        assert widget._confirm_drop(raw) is False
+        assert len(seen) == 1
+        assert "<U+202E>" in seen[0]
+        assert "\u202e" not in seen[0]
+
 
 def test_profile_theme_line_is_single_quoted(tmp_path, monkeypatch):
     import os
@@ -752,12 +852,15 @@ def test_profile_theme_line_is_single_quoted(tmp_path, monkeypatch):
         'oh-my-posh init pwsh --config "C:/old.omp.json" | Invoke-Expression\n',
         encoding="utf-8",
     )
+    (odd / "not safe.omp.json").write_text("{}", encoding="utf-8")
     monkeypatch.setattr(posh, "THEMES_DIR", str(odd))
     monkeypatch.setattr(posh, "profile_path", lambda: str(profile))
+    before = profile.read_text(encoding="utf-8")
+    assert posh.set_theme("not safe") is False
     assert posh.set_theme("$(calc)") is False
     assert posh.set_theme("x\u201d") is False
     assert posh.set_theme("x\u2019;ni") is False
-    assert profile.read_text(encoding="utf-8").count('"') == 2
+    assert profile.read_text(encoding="utf-8") == before
 
     assert posh.set_theme("kali") is True
     text = profile.read_text(encoding="utf-8")

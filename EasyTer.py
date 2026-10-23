@@ -35,7 +35,9 @@ from easyterpro.localpath import (
     osc7_host_ok, require_wide_path,
 )
 from easyterpro.pasteguard import guarded_paste
-from easyterpro.shellquote import prepare_dropped_files, sanitize_dropped_text
+from easyterpro.shellquote import (
+    prepare_dropped_files, reveal_format_chars, sanitize_dropped_text,
+)
 from easyterpro.shellquote import quote_shell_path as _quote_shell_path  # noqa: F401
 
 
@@ -3434,9 +3436,9 @@ class TerminalWidget(QWidget):
         if not parts:
             event.ignore()
             return
-        # The tab's shell may not be the program reading the paste. Double-quote
-        # only a path with no metacharacters; otherwise confirm the literal text.
-        planned = prepare_dropped_files(parts)
+        # Double-quote a plain path. A metacharacter or a trailing backslash is
+        # quoted for this pane's shell and shown before it is written.
+        planned = prepare_dropped_files(parts, self.command)
         if planned is None:
             event.ignore()
             return
@@ -3462,11 +3464,15 @@ class TerminalWidget(QWidget):
         )
 
     def _confirm_drop(self, text):
-        """Show the exact text a special-character drop would write."""
+        """Show the quoted drop. Format characters are visible escapes."""
+        shown = i18n.t("drop.confirm") + "\n\n" + reveal_format_chars(text)
+        return self._ask_drop(shown)
+
+    def _ask_drop(self, shown):
         from PySide6.QtWidgets import QMessageBox
         box = QMessageBox(self)
         box.setWindowTitle(i18n.t("drop.title"))
-        box.setText(i18n.t("drop.confirm") + "\n\n" + text)
+        box.setText(shown)
         box.setStandardButtons(QMessageBox.Ok | QMessageBox.Cancel)
         box.setDefaultButton(QMessageBox.Cancel)
         return box.exec() == QMessageBox.Ok

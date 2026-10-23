@@ -104,12 +104,14 @@ The path `accept_local_path` returns is a Python `str`. It is passed to
 `isfile`, `open`). It is not encoded with the ANSI code page, and it is not
 passed to an `*A` Win32 API. `bytes` would best-fit.
 
-A dropped file is not quoted for the tab's shell. That shell may not be the
-program reading the pane (cmd inside pwsh, WSL, ssh). A path with no shell
-metacharacter is wrapped in double quotes. A path that contains one is shown
-literally and written only after confirmation. A Unicode control character
-refuses the drop. Dropped text is not quoted as a path: every control
-character is removed, then the paste guard runs.
+A dropped file with no shell metacharacter is wrapped in double quotes. A
+backslash is a path separator, not a metacharacter, except when the path
+ends in one (`"C:\"` escapes the closing quote). A metacharacter or a
+trailing backslash is quoted for the pane's shell and shown before it is
+written; the inserted text is that quoted form. Format characters are shown
+on the card as `<U+XXXX>`. A Unicode control character refuses the drop.
+Dropped text is not quoted as a path: newlines become a space, every other
+control character (C0, DEL, and C1) is removed, then the paste guard runs.
 
 `quote_shell_path` is used when the command is known to be PowerShell (the
 oh-my-posh lines). It refuses a control character. PowerShell single quotes

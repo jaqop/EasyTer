@@ -17,7 +17,7 @@ from . import pluginhost
 from .backend import PtyBackend
 from .config import config
 from .pasteguard import guarded_paste
-from .shellquote import prepare_dropped_files, sanitize_dropped_text
+from .shellquote import prepare_dropped_files, reveal_format_chars, sanitize_dropped_text
 from .shellquote import quote_shell_path as _quote_shell_path  # noqa: F401
 
 import re
@@ -723,9 +723,9 @@ class TerminalWidget(QWidget):
         if not parts:
             event.ignore()
             return
-        # صدفة التبويب قد لا تكون البرنامج الذي يقرأ اللصق. الاقتباس المزدوج
-        # لمسار بلا محارف خاصة فقط؛ غير ذلك تأكيد للنص الحرفي.
-        planned = prepare_dropped_files(parts)
+        # اقتباس مزدوج لمسار عادي. محرف خاص أو شرطة عكسية أخيرة تُقتبس لصدفة
+        # هذا اللوح وتُعرض قبل الكتابة.
+        planned = prepare_dropped_files(parts, self.command)
         if planned is None:
             event.ignore()
             return
@@ -751,13 +751,17 @@ class TerminalWidget(QWidget):
         )
 
     def _confirm_drop(self, text):
-        """يعرض النص الذي سيُكتب حرفيًّا قبل إدراج مسار فيه محارف صدفة."""
+        """يعرض النص المقتبس. محارف التنسيق تظهر كـ ``<U+XXXX>``."""
+        shown = (
+            "هذا المسار يحوي محارف صدفة. سيُكتب النص التالي. محارف التنسيق تظهر كـ <U+XXXX>. أدرجه فقط إن كنت تثق به.\n\n"
+            + reveal_format_chars(text))
+        return self._ask_drop(shown)
+
+    def _ask_drop(self, shown):
         from PySide6.QtWidgets import QMessageBox
         box = QMessageBox(self)
         box.setWindowTitle("إدراج نص")
-        box.setText(
-            "هذا المسار يحوي محارف صدفة. سيُكتب النص التالي كما هو. أدرجه فقط إن كنت تثق به.\n\n"
-            + text)
+        box.setText(shown)
         box.setStandardButtons(QMessageBox.Ok | QMessageBox.Cancel)
         box.setDefaultButton(QMessageBox.Cancel)
         return box.exec() == QMessageBox.Ok

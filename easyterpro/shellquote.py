@@ -6,10 +6,9 @@ and backticks, all of which are shell syntax. A drop is also not required to
 be a local path.
 
 ``quote_shell_path`` is for a command that is known to be PowerShell, cmd, or
-POSIX (the oh-my-posh lines). The pane's tab command is not that knowledge:
-the user may have started cmd inside pwsh, or ssh. File drops therefore use
-``prepare_dropped_files``, which double-quotes only a path with no shell
-metacharacter and otherwise asks the UI to confirm the literal text.
+POSIX (the oh-my-posh lines, and a file drop the user has confirmed). A path
+with no shell metacharacter is double-quoted without asking. A metacharacter,
+or a trailing backslash, is quoted for the pane's shell and shown first.
 """
 
 import ntpath
@@ -21,10 +20,11 @@ from typing import Optional
 _PS_SINGLE_QUOTES = re.compile("['\u2018\u2019\u201a\u201b]")
 
 # Metacharacters of PowerShell, cmd, or POSIX. A path that contains one is not
-# auto-inserted: the tab's shell may not be the program that will read it.
+# auto-inserted. Backslash is not in this set: inside double quotes it is
+# literal in all three shells, and every Windows path contains one.
 # Double-quote lookalikes are included because PowerShell accepts them as `"`.
 _SHELL_SPECIAL = frozenset(
-    "$\\'\"%!^&|<>;()`"
+    "$'\"%!^&|<>;()`"
     "\u2018\u2019\u201a\u201b"
     "\u201c\u201d\u201e\u201f"
 )
@@ -104,44 +104,86 @@ def quote_shell_path(path, shell="powershell") -> Optional[str]:
     return quoted
 
 
-def prepare_dropped_files(parts) -> Optional[tuple]:
+def _drop_needs_confirm(path: str) -> bool:
+    """True for a shell metacharacter or a trailing backslash.
+
+    ``"C:\\"`` is special to CommandLineToArgvW: the backslash escapes the
+    closing quote. A backslash anywhere else is a path separator.
+    """
+    if path.endswith("\\"):
+        return True
+    return any(ch in _SHELL_SPECIAL for ch in path)
+
+
+def prepare_dropped_files(parts, shell) -> Optional[tuple]:
     """``(text, needs_confirm)`` for dropped file paths, or None to refuse.
 
-    A Cc character refuses the whole drop. A shell metacharacter returns the
-    paths joined literally and ``needs_confirm`` True: the UI shows that exact
-    text and writes it only after the user accepts. Anything else is wrapped
-    in double quotes, which is safe in PowerShell, cmd, and POSIX when the
-    path has none of those characters. The tab's shell is not consulted.
+    A Cc character refuses the whole drop. A path with no metacharacter and
+    no trailing backslash is wrapped in double quotes and does not ask.
+    Anything else is quoted for ``shell`` and ``needs_confirm`` is True. The
+    text is that quoted form, never the raw path. A part ``shell`` cannot
+    quote refuses the whole drop.
     """
     if not parts:
         return None
-    literals = []
-    special = False
+    cleaned = []
+    confirm = False
     for part in parts:
         if not isinstance(part, str) or part == "":
             return None
         if _has_control(part):
             return None
-        if any(ch in _SHELL_SPECIAL for ch in part):
-            special = True
-        literals.append(part)
-    if special:
-        return " ".join(literals), True
-    return " ".join('"' + part + '"' for part in literals), False
+        if _drop_needs_confirm(part):
+            confirm = True
+        cleaned.append(part)
+    if not confirm:
+        return " ".join('"' + part + '"' for part in cleaned), False
+    quoted_parts = []
+    for part in cleaned:
+        quoted = quote_shell_path(part, shell)
+        if not quoted:
+            return None
+        quoted_parts.append(quoted)
+    return " ".join(quoted_parts), True
 
 
 def sanitize_dropped_text(text) -> Optional[str]:
-    """Dropped text with every Cc character removed, or None if nothing remains.
+    """Dropped text made safe to write, or None if nothing remains.
 
-    Text is not a path and is not quoted. Cc characters are keystrokes (Ctrl+U
-    clears the line, Ctrl+O accepts it) even inside quotes.
+    Newlines become a single space so a multi-line drop stays one line
+    (``a\\nb`` is ``a b``). Every other Cc character is removed, including
+    C1 (U+0080–U+009F) and DEL (U+007F), not only C0. Those are keystrokes
+    even inside quotes.
     """
     if not isinstance(text, str) or text == "":
         return None
-    cleaned = "".join(ch for ch in text if unicodedata.category(ch) != "Cc")
-    if cleaned == "":
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    cleaned = []
+    for ch in text:
+        if ch == "\n":
+            cleaned.append(" ")
+        elif unicodedata.category(ch) == "Cc":
+            continue
+        else:
+            cleaned.append(ch)
+    result = "".join(cleaned)
+    if result == "":
         return None
-    return cleaned
+    return result
+
+
+def reveal_format_chars(text) -> str:
+    """Replace Cf characters with ``<U+XXXX>`` for a confirm card.
+
+    Bidi and other format characters would otherwise reorder the path the
+    user is asked to approve. The bytes written to the shell are unchanged.
+    """
+    if not isinstance(text, str):
+        return ""
+    return "".join(
+        "<U+%04X>" % ord(ch) if unicodedata.category(ch) == "Cf" else ch
+        for ch in text
+    )
 
 
 def quote_dropped_text(parts, shell) -> Optional[str]:
