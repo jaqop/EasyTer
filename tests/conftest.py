@@ -1,9 +1,14 @@
 # -*- coding: utf-8 -*-
 """Shared test fixtures for the EasyTer Pro test suite."""
 
+import os
+
 import pytest
 
 from easyterpro import pluginhost
+
+# Headless Qt (CI and local). Must be set before PySide6 loads a platform plugin.
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 
 @pytest.fixture(autouse=True)

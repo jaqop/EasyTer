@@ -50,6 +50,16 @@ def _is_arabic_letter(ch):
             or 0xFE70 <= o <= 0xFEFF)
 
 
+def _quote_shell_path(path):
+    """اقتبس مسارًا مُسقطًا يحوي فراغًا أو جدولة حتى يصل للصدفة وسيطًا واحدًا.
+
+    علامة الاقتباس المزدوجة داخل المسار تُهرَّب بشرطة عكسيّة. المسارات بلا
+    فراغ تُعاد كما هي."""
+    if any(ws in path for ws in (" ", "\t")):
+        return '"' + path.replace('"', '\\"') + '"'
+    return path
+
+
 class TerminalWidget(QWidget):
 
     focused = Signal(object)   # يُطلَق عند تركيز هذا اللوح (لتتبّع اللوح النشط)
@@ -693,11 +703,7 @@ class TerminalWidget(QWidget):
             event.ignore()
             return
         # اقتبس أيّ مسار فيه فراغ أو محرف خاصّ كي يصل سليمًا للصدف
-        chunks = []
-        for pth in parts:
-            if any(ws in pth for ws in (" ", "\t")):
-                pth = '"' + pth.replace('"', '\\"') + '"'
-            chunks.append(pth)
+        chunks = [_quote_shell_path(pth) for pth in parts]
         self.setFocus()
         self.scroll_offset = 0
         self.backend.write(" ".join(chunks))
