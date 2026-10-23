@@ -104,12 +104,19 @@ The path `accept_local_path` returns is a Python `str`. It is passed to
 `isfile`, `open`). It is not encoded with the ANSI code page, and it is not
 passed to an `*A` Win32 API. `bytes` would best-fit.
 
-Drag-and-drop is quoted for the shell in that pane. PowerShell and pwsh use
-single quotes with an embedded quote doubled. cmd uses double quotes, writes
-`!` as `^!`, and refuses a path that contains `"` or `%` or ends in `^`.
-bash and WSL use single quotes with `'\''`. `accept_local_path` is not the
-quoter: it accepts `'`, `;`, `&`, `$(` and backticks. Carriage return and
-line feed are stripped so a drop cannot submit a command.
+A dropped file is not quoted for the tab's shell. That shell may not be the
+program reading the pane (cmd inside pwsh, WSL, ssh). A path with no shell
+metacharacter is wrapped in double quotes. A path that contains one is shown
+literally and written only after confirmation. A Unicode control character
+refuses the drop. Dropped text is not quoted as a path: every control
+character is removed, then the paste guard runs.
+
+`quote_shell_path` is used when the command is known to be PowerShell (the
+oh-my-posh lines). It refuses a control character. PowerShell single quotes
+double `'`, U+2018, U+2019, U+201A, and U+201B, because PowerShell treats all
+five as quotes. cmd still refuses `"` and `%` and a trailing `^`.
+`accept_local_path` is not the quoter: it accepts `'`, `;`, `&`, `$(` and
+backticks.
 
 OSC 52 clipboard writes are off unless `osc52_clipboard` is enabled. When it
 is on, each write asks for confirmation and is limited to 1 MB. An OSC 52
@@ -117,8 +124,10 @@ query is never answered.
 
 Paste in EasyTer Pro uses the same guard as EasyTer: a warning for multi-line
 text, control characters, and large pastes, then bracketed-paste wrapping
-when the program asked for it.
+when the program asked for it. ESC and U+009B are removed from the pasted
+text so a nested bracket-end marker cannot close the paste.
 
-The oh-my-posh theme path written into a live PowerShell pane passes
-`accept_local_path` and is single-quoted. A name that leaves the themes
-directory is not written.
+The oh-my-posh theme path written into a live PowerShell pane, into a new
+PowerShell tab, and into `$PROFILE` passes the PowerShell quoter above. A
+name that leaves the themes directory is not written. A `$PROFILE` theme
+name has to be a plain filename, and the path is single-quoted.

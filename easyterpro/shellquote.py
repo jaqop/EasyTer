@@ -1,20 +1,33 @@
 # -*- coding: utf-8 -*-
-"""Quote a dropped path for the shell that is actually running in the pane.
+"""Quote a path for a known shell, and decide what a drop may write.
 
 ``accept_local_path`` is not a quoter. It accepts ``'``, ``;``, ``&``, ``$(``
 and backticks, all of which are shell syntax. A drop is also not required to
-be a local path: text and URLs can carry a carriage return, and a ``\\r``
-written to the pane submits a command before the shell ever parses quotes.
-Those characters are stripped here.
+be a local path.
 
-The family is taken from the pane's shell command (PowerShell, cmd, or
-bash/WSL). An unrecognized shell is refused rather than guessed: cmd double
-quotes are still expandable in PowerShell, and PowerShell single quotes are
-not quotes in cmd.
+``quote_shell_path`` is for a command that is known to be PowerShell, cmd, or
+POSIX (the oh-my-posh lines). The pane's tab command is not that knowledge:
+the user may have started cmd inside pwsh, or ssh. File drops therefore use
+``prepare_dropped_files``, which double-quotes only a path with no shell
+metacharacter and otherwise asks the UI to confirm the literal text.
 """
 
 import ntpath
+import re
+import unicodedata
 from typing import Optional
+
+# PowerShell treats these as single quotes, not only U+0027.
+_PS_SINGLE_QUOTES = re.compile("['\u2018\u2019\u201a\u201b]")
+
+# Metacharacters of PowerShell, cmd, or POSIX. A path that contains one is not
+# auto-inserted: the tab's shell may not be the program that will read it.
+# Double-quote lookalikes are included because PowerShell accepts them as `"`.
+_SHELL_SPECIAL = frozenset(
+    "$\\'\"%!^&|<>;()`"
+    "\u2018\u2019\u201a\u201b"
+    "\u201c\u201d\u201e\u201f"
+)
 
 _FAMILIES = ("powershell", "cmd", "posix")
 
@@ -51,36 +64,84 @@ def shell_family(command) -> Optional[str]:
     return None
 
 
+def _has_control(text: str) -> bool:
+    """True when ``text`` contains a Unicode Cc character (C0, DEL, or C1)."""
+    return any(unicodedata.category(ch) == "Cc" for ch in text)
+
+
 def quote_shell_path(path, shell="powershell") -> Optional[str]:
     """A quoted path for ``shell``, or None when it cannot be quoted safely.
 
-    ``\\r`` and ``\\n`` are removed so the text cannot submit a line. cmd
-    refuses a path that contains ``"`` or ``%`` (neither is neutralized by
-    double quotes) and a path ending in ``^`` (that caret escapes the closing
-    quote). ``!`` is written as ``^!`` because delayed expansion still sees it
-    inside quotes. ``^ & | < >`` are literal inside cmd double quotes, so they
-    are not caret-escaped: a caret would become part of the filename.
+    Any Cc character is refused. Stripping it would change the name, and
+    writing it lets the shell read a keystroke. cmd refuses a path that
+    contains ``"`` or ``%`` (neither is neutralized by double quotes) and a
+    path ending in ``^`` (that caret escapes the closing quote). ``!`` is
+    written as ``^!`` because delayed expansion still sees it inside quotes.
+    ``^ & | < >`` are literal inside cmd double quotes, so they are not
+    caret-escaped: a caret would become part of the filename.
+
+    PowerShell single quotes double U+0027 and U+2018..U+201B. PowerShell
+    treats all five as quotes.
     """
-    if not isinstance(path, str):
+    if not isinstance(path, str) or path == "":
         return None
-    cleaned = path.replace("\r", "").replace("\n", "")
-    if cleaned == "":
+    if _has_control(path):
         return None
     if shell in _FAMILIES:
         family = shell
     else:
         family = shell_family(shell)
     if family == "powershell":
-        quoted = "'" + cleaned.replace("'", "''") + "'"
+        quoted = "'" + _PS_SINGLE_QUOTES.sub(lambda m: m.group(0) * 2, path) + "'"
     elif family == "cmd":
-        quoted = _quote_cmd(cleaned)
+        quoted = _quote_cmd(path)
     elif family == "posix":
-        quoted = "'" + cleaned.replace("'", "'\\''") + "'"
+        quoted = "'" + path.replace("'", "'\\''") + "'"
     else:
         quoted = None
-    if not quoted or "\r" in quoted or "\n" in quoted:
+    if not quoted or _has_control(quoted):
         return None
     return quoted
+
+
+def prepare_dropped_files(parts) -> Optional[tuple]:
+    """``(text, needs_confirm)`` for dropped file paths, or None to refuse.
+
+    A Cc character refuses the whole drop. A shell metacharacter returns the
+    paths joined literally and ``needs_confirm`` True: the UI shows that exact
+    text and writes it only after the user accepts. Anything else is wrapped
+    in double quotes, which is safe in PowerShell, cmd, and POSIX when the
+    path has none of those characters. The tab's shell is not consulted.
+    """
+    if not parts:
+        return None
+    literals = []
+    special = False
+    for part in parts:
+        if not isinstance(part, str) or part == "":
+            return None
+        if _has_control(part):
+            return None
+        if any(ch in _SHELL_SPECIAL for ch in part):
+            special = True
+        literals.append(part)
+    if special:
+        return " ".join(literals), True
+    return " ".join('"' + part + '"' for part in literals), False
+
+
+def sanitize_dropped_text(text) -> Optional[str]:
+    """Dropped text with every Cc character removed, or None if nothing remains.
+
+    Text is not a path and is not quoted. Cc characters are keystrokes (Ctrl+U
+    clears the line, Ctrl+O accepts it) even inside quotes.
+    """
+    if not isinstance(text, str) or text == "":
+        return None
+    cleaned = "".join(ch for ch in text if unicodedata.category(ch) != "Cc")
+    if cleaned == "":
+        return None
+    return cleaned
 
 
 def quote_dropped_text(parts, shell) -> Optional[str]:

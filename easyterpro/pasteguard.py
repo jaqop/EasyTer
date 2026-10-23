@@ -34,11 +34,17 @@ def paste_needs_warning(text) -> bool:
 
 
 def bracket_paste(text: str, bracketed: bool) -> str:
-    """Normalize newlines and wrap when the program enabled bracketed paste."""
+    """Normalize newlines and wrap when the program enabled bracketed paste.
+
+    Every ESC and U+009B is removed first. A single pass over ``\\x1b[201~``
+    leaves a real end marker when the marker itself contains an escape
+    (``\\x1b[20\\x1b[201~1~``). Kitty and WezTerm drop these bytes from a paste
+    so the pasted text cannot close the bracket.
+    """
     body = text.replace("\r\n", "\r").replace("\n", "\r")
+    body = body.replace("\x1b", "").replace("\x9b", "")
     if not bracketed:
         return body
-    body = body.replace("\x1b[201~", "")
     return "\x1b[200~" + body + "\x1b[201~"
 
 

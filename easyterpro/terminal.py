@@ -17,7 +17,7 @@ from . import pluginhost
 from .backend import PtyBackend
 from .config import config
 from .pasteguard import guarded_paste
-from .shellquote import quote_dropped_text
+from .shellquote import prepare_dropped_files, sanitize_dropped_text
 from .shellquote import quote_shell_path as _quote_shell_path  # noqa: F401
 
 import re
@@ -711,19 +711,56 @@ class TerminalWidget(QWidget):
                 else:
                     parts.append(url.toString())
         elif md.hasText():
-            parts.append(md.text())
+            text = self._dropped_text(md.text())
+            if not text:
+                event.ignore()
+                return
+            self.setFocus()
+            self.scroll_offset = 0
+            self.backend.write(text)
+            event.acceptProposedAction()
+            return
         if not parts:
             event.ignore()
             return
-        # اقتباس حسب الصدفة العاملة في هذا اللوح. \\r و\\n تُحذف حتى لا يُنفَّذ أمر.
-        text = quote_dropped_text(parts, self.command)
-        if not text:
+        # صدفة التبويب قد لا تكون البرنامج الذي يقرأ اللصق. الاقتباس المزدوج
+        # لمسار بلا محارف خاصة فقط؛ غير ذلك تأكيد للنص الحرفي.
+        planned = prepare_dropped_files(parts)
+        if planned is None:
+            event.ignore()
+            return
+        text, needs_confirm = planned
+        if needs_confirm and not self._confirm_drop(text):
             event.ignore()
             return
         self.setFocus()
         self.scroll_offset = 0
         self.backend.write(text)
         event.acceptProposedAction()
+
+    def _dropped_text(self, text):
+        """تُحذف محارف التحكّم، ثم يمرّ النص بحارس اللصق."""
+        cleaned = sanitize_dropped_text(text)
+        if cleaned is None:
+            return None
+        return guarded_paste(
+            cleaned,
+            bracketed=bool(getattr(self.backend, "bracketed_paste", False)),
+            protection=True,
+            confirm=self._confirm_paste,
+        )
+
+    def _confirm_drop(self, text):
+        """يعرض النص الذي سيُكتب حرفيًّا قبل إدراج مسار فيه محارف صدفة."""
+        from PySide6.QtWidgets import QMessageBox
+        box = QMessageBox(self)
+        box.setWindowTitle("إدراج نص")
+        box.setText(
+            "هذا المسار يحوي محارف صدفة. سيُكتب النص التالي كما هو. أدرجه فقط إن كنت تثق به.\n\n"
+            + text)
+        box.setStandardButtons(QMessageBox.Ok | QMessageBox.Cancel)
+        box.setDefaultButton(QMessageBox.Cancel)
+        return box.exec() == QMessageBox.Ok
 
     def _select_all(self):
         with self.backend.lock:

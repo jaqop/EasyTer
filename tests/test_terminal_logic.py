@@ -172,10 +172,12 @@ def test_quote_shell_path_matches_the_running_shell(quote):
     assert quote(r"C:\My Documents\a.txt", "pwsh.exe") == r"'C:\My Documents\a.txt'"
     assert quote("C:\\it's a $file.txt", "powershell.exe") == r"'C:\it''s a $file.txt'"
     assert quote(r"C:\a&b;$(whoami)`x.txt", "pwsh") == r"'C:\a&b;$(whoami)`x.txt'"
-    assert quote("a\tb", "powershell") == "'a\tb'"
-    assert quote("C:\\a\r\nb.txt", "powershell.exe") == r"'C:\ab.txt'"
+    assert quote("a\tb", "powershell") is None
+    assert quote("C:\\a\r\nb.txt", "powershell.exe") is None
     assert quote("\r\n", "powershell") is None
     assert quote("", "powershell") is None
+    assert quote("a\x1bb", "powershell") is None
+    assert quote("a\x9bb", "pwsh") is None
 
     # cmd: double quotes. & | < > ^ are literal inside them. ! is caret-escaped.
     # " and % cannot be quoted safely, and a trailing ^ escapes the closer.
@@ -186,11 +188,11 @@ def test_quote_shell_path_matches_the_running_shell(quote):
     assert quote('C:\\a"b.txt', "cmd") is None
     assert quote(r"C:\100%.txt", "cmd.exe") is None
     assert quote("C:\\ends^\n", "cmd") is None
-    assert quote("C:\\a\r\nb.txt", "cmd.exe") == r'"C:\ab.txt"'
+    assert quote("C:\\a\r\nb.txt", "cmd.exe") is None
 
     # bash / WSL: single quotes, embedded quote as '\'' .
     assert quote("/mnt/c/it's.txt", "wsl.exe") == "'/mnt/c/it'\\''s.txt'"
-    assert quote("a\rb", r"C:\Program Files\Git\usr\bin\bash.exe") == "'ab'"
+    assert quote("a\rb", r"C:\Program Files\Git\usr\bin\bash.exe") is None
     assert quote(r"C:\a&b.txt", "bash") == r"'C:\a&b.txt'"
 
     # An unknown shell is not guessed.
@@ -209,9 +211,9 @@ def test_local_path_gate_does_not_neutralize_shell_syntax():
 
     path = r"C:\a'; & $(calc) `whoami`.txt"
     assert accept_local_path(path) == path
-    dropped = quote_dropped_text([path, "C:\\ok\r\n"], "powershell.exe")
+    dropped = quote_dropped_text([path, r"C:\ok"], "powershell.exe")
     assert dropped == "'C:\\a''; & $(calc) `whoami`.txt' 'C:\\ok'"
-    assert "\r" not in dropped and "\n" not in dropped
+    assert quote_dropped_text([path, "C:\\ok\r\n"], "powershell.exe") is None
     # one unquotable neighbor refuses the whole drop
     assert quote_dropped_text([r"C:\ok.txt", r"C:\100%.txt"], "cmd.exe") is None
     assert quote_dropped_text([r"C:\ok.txt"], "cmd.exe") == r'"C:\ok.txt"'
@@ -397,7 +399,8 @@ def test_paste_guard_warns_for_multiline_controls_and_size():
     assert guarded_paste("", bracketed=True, protection=True, confirm=lambda _t: True) is None
     wrapped = guarded_paste("echo hi\necho\x1b[201~calc", bracketed=True, protection=False,
                             confirm=lambda _t: False)
-    assert wrapped == "\x1b[200~echo hi\recho" + "calc" + "\x1b[201~"
+    assert wrapped == "\x1b[200~echo hi\recho[201~calc\x1b[201~"
+    assert wrapped.count("\x1b") == 2
 
 
 def test_easyter_paste_uses_the_same_guard(qapp, monkeypatch):
@@ -457,7 +460,7 @@ def test_pro_paste_uses_the_same_guard(qapp):
     widget._confirm_paste = lambda _text: True
     qapp.clipboard().setText("echo hi\necho there\x1b[201~calc")
     widget._paste_clipboard()
-    assert written == ["\x1b[200~echo hi\recho therecalc\x1b[201~"]
+    assert written == ["\x1b[200~echo hi\recho there[201~calc\x1b[201~"]
 
     written.clear()
     widget.backend.bracketed_paste = False
@@ -467,7 +470,7 @@ def test_pro_paste_uses_the_same_guard(qapp):
     assert written == []
     widget._confirm_paste = lambda _text: True
     widget._paste_clipboard()
-    assert written == ["ping\x1b"]
+    assert written == ["ping"]
 
 
 def test_pro_backend_tracks_bracketed_paste():
@@ -580,3 +583,187 @@ def test_live_prompt_command_is_gated_and_quoted():
     assert live_prompt_command(themes, "kali\r\ncalc") is None
     assert live_prompt_command(themes, 'ka"li') is None
     assert live_prompt_command("/home/me/.poshthemes", "kali") is None
+
+
+def test_powershell_smart_quotes_are_doubled_on_the_omp_line():
+    from easyterpro.shellquote import quote_shell_path
+    from easyterpro.window import live_prompt_command
+
+    raw = "a'\u2018\u2019\u201a\u201bb"
+    assert quote_shell_path(raw, "powershell") == "'a''\u2018\u2018\u2019\u2019\u201a\u201a\u201b\u201bb'"
+    themes = r"C:\Users\me\.poshthemes"
+    name = "x\u2019;ni PWNED;\u2019"
+    path = themes + "\\" + name + ".omp.json"
+    quoted = quote_shell_path(path, "powershell")
+    cmd = live_prompt_command(themes, name)
+    assert cmd is not None and cmd.endswith("\r")
+    assert quoted in cmd
+    assert "\u2019\u2019" in cmd
+    assert EasyTer._powershell_set_prompt(path) == "__et_set_prompt %s\r" % quoted
+    setup = EasyTer._powershell_theme_setup(path)
+    assert "& {oh-my-posh init $__s --config %s | Invoke-Expression}" % quoted in setup
+    assert EasyTer._powershell_theme_setup("a\x1bb") == ""
+    assert EasyTer._powershell_set_prompt("a\x15b") is None
+
+
+def test_bracket_paste_strips_nested_end_marker():
+    from easyterpro.pasteguard import bracket_paste, guarded_paste
+
+    nested = "\x1b[20\x1b[201~1~"
+    out = bracket_paste(nested, True)
+    assert out == "\x1b[200~[20[201~1~\x1b[201~"
+    body = out[len("\x1b[200~"):-len("\x1b[201~")]
+    assert "\x1b" not in body and "\x9b" not in body
+    assert bracket_paste("a\x9b[201~b", True) == "\x1b[200~a[201~b\x1b[201~"
+    assert guarded_paste(nested, bracketed=False, protection=False, confirm=lambda _t: False) == "[20[201~1~"
+
+
+class _DropUrl:
+    def __init__(self, path):
+        self._path = path
+
+    def isLocalFile(self):
+        return True
+
+    def toLocalFile(self):
+        return self._path
+
+
+class _DropMime:
+    def __init__(self, urls=None, text=None):
+        self._urls = urls
+        self._text = text
+
+    def hasUrls(self):
+        return bool(self._urls)
+
+    def hasText(self):
+        return self._text is not None
+
+    def urls(self):
+        return self._urls or []
+
+    def text(self):
+        return self._text
+
+
+class _DropEvent:
+    def __init__(self, mime):
+        self._mime = mime
+        self.accepted = False
+        self.ignored = False
+
+    def mimeData(self):
+        return self._mime
+
+    def acceptProposedAction(self):
+        self.accepted = True
+
+    def ignore(self):
+        self.ignored = True
+
+
+def _drop_widget(cls, bracketed=False):
+    written = []
+    widget = cls.__new__(cls)
+    widget._exited = False
+    widget.read_only = False
+    widget.scroll_offset = 0
+    widget.command = "cmd.exe"
+    widget.setFocus = lambda *a, **k: None
+
+    class Backend:
+        def write(self, text, _written=written):
+            _written.append(text)
+
+    backend = Backend()
+    backend.bracketed_paste = bracketed
+    widget.backend = backend
+    return widget, written
+
+
+def test_file_drop_confirms_shell_specials_instead_of_guessing():
+    from easyterpro.shellquote import prepare_dropped_files
+
+    assert prepare_dropped_files(["notes.txt"]) == ('"notes.txt"', False)
+    assert prepare_dropped_files(["my file.txt"]) == ('"my file.txt"', False)
+    assert prepare_dropped_files([r"C:\a$(whoami).txt"]) == (r"C:\a$(whoami).txt", True)
+    assert prepare_dropped_files(["a\x15touch"]) is None
+    assert prepare_dropped_files(["notes.txt", "a\x0fb"]) is None
+
+    path = r"C:\a$(whoami).txt"
+    for cls in (EasyTer.TerminalWidget, pro_terminal.TerminalWidget):
+        widget, written = _drop_widget(cls)
+        seen = []
+        widget._confirm_drop = lambda text, _seen=seen: _seen.append(text) or False
+        event = _DropEvent(_DropMime(urls=[_DropUrl(path)]))
+        widget.dropEvent(event)
+        assert seen == [path]
+        assert written == []
+        assert event.ignored
+
+        widget._confirm_drop = lambda text: text == path
+        event = _DropEvent(_DropMime(urls=[_DropUrl(path)]))
+        widget.dropEvent(event)
+        assert written == [path]
+        assert event.accepted
+
+        widget._confirm_drop = lambda text: (_ for _ in ()).throw(AssertionError(text))
+        event = _DropEvent(_DropMime(urls=[_DropUrl("notes.txt")]))
+        widget.dropEvent(event)
+        assert written[-1] == '"notes.txt"'
+        assert event.accepted
+
+
+def test_dropped_text_strips_controls_and_uses_the_paste_guard(monkeypatch):
+    payload = "\x15touch /tmp/PWNED\x0f"
+    for cls, protection in (
+        (EasyTer.TerminalWidget, True),
+        (pro_terminal.TerminalWidget, None),
+    ):
+        widget, written = _drop_widget(cls, bracketed=True)
+        if protection is not None:
+            monkeypatch.setitem(EasyTer.SETTINGS, "paste_protection", protection)
+        widget._confirm_paste = lambda text: (_ for _ in ()).throw(AssertionError(text))
+        widget._confirm_drop = lambda text: (_ for _ in ()).throw(AssertionError(text))
+        event = _DropEvent(_DropMime(text=payload))
+        widget.dropEvent(event)
+        assert written == ["\x1b[200~touch /tmp/PWNED\x1b[201~"]
+        assert event.accepted
+
+        written.clear()
+        event = _DropEvent(_DropMime(text="\x15\x0f"))
+        widget.dropEvent(event)
+        assert written == []
+        assert event.ignored
+
+
+def test_profile_theme_line_is_single_quoted(tmp_path, monkeypatch):
+    import os
+
+    from easyterpro import posh
+    from easyterpro.shellquote import quote_shell_path
+
+    odd = tmp_path / "John\u2019s $(PWNED)"
+    odd.mkdir()
+    (odd / "kali.omp.json").write_text("{}", encoding="utf-8")
+    profile = tmp_path / "profile.ps1"
+    profile.write_text(
+        'oh-my-posh init pwsh --config "C:/old.omp.json" | Invoke-Expression\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(posh, "THEMES_DIR", str(odd))
+    monkeypatch.setattr(posh, "profile_path", lambda: str(profile))
+    assert posh.set_theme("$(calc)") is False
+    assert posh.set_theme("x\u201d") is False
+    assert posh.set_theme("x\u2019;ni") is False
+    assert profile.read_text(encoding="utf-8").count('"') == 2
+
+    assert posh.set_theme("kali") is True
+    text = profile.read_text(encoding="utf-8")
+    quoted = quote_shell_path(os.path.join(str(odd), "kali.omp.json"), "powershell")
+    assert "oh-my-posh init pwsh --config %s | Invoke-Expression" % quoted in text
+    assert '"' not in text
+    assert "\u2019\u2019" in quoted
+    assert "$(PWNED)" in quoted
+    assert posh.current() == "kali"

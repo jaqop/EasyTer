@@ -35,7 +35,7 @@ from easyterpro.localpath import (
     osc7_host_ok, require_wide_path,
 )
 from easyterpro.pasteguard import guarded_paste
-from easyterpro.shellquote import quote_dropped_text
+from easyterpro.shellquote import prepare_dropped_files, sanitize_dropped_text
 from easyterpro.shellquote import quote_shell_path as _quote_shell_path  # noqa: F401
 
 
@@ -363,6 +363,30 @@ def existing_local_dir(path):
     except OSError:
         return None
     return None
+
+
+def _powershell_theme_setup(path):
+    """oh-my-posh init fragment for a new PowerShell tab, or "" if unquotable.
+
+    The path is single-quoted for PowerShell, including the smart quotes
+    PowerShell treats as ``'``. A control character refuses the fragment.
+    """
+    quoted = _quote_shell_path(path, "powershell")
+    if not quoted:
+        return ""
+    return ("$ErrorActionPreference='SilentlyContinue'; "
+            "$__s=if($PSVersionTable.PSEdition -eq 'Core'){'pwsh'}else{'powershell'}; "
+            "& {oh-my-posh init $__s --config %s | Invoke-Expression} 2>$null; "
+            "$ErrorActionPreference='Continue'; "
+            % quoted)
+
+
+def _powershell_set_prompt(path):
+    """``__et_set_prompt`` line for a live theme switch, or None if unquotable."""
+    quoted = _quote_shell_path(path, "powershell")
+    if not quoted:
+        return None
+    return "__et_set_prompt %s\r" % quoted
 
 
 def existing_local_file(path):
@@ -1322,12 +1346,9 @@ class PtyBackend(QObject):
                 pt = SETTINGS.get("prompt_theme") or ""
                 if pt and os.path.exists(pt):   # chosen oh-my-posh prompt theme first
                     # detect edition at runtime (Desktop=5.1 'powershell',
-                    # Core=7 'pwsh') so PS7-only init code never runs in 5.1
-                    setup += ("$ErrorActionPreference='SilentlyContinue'; "
-                              "$__s=if($PSVersionTable.PSEdition -eq 'Core'){'pwsh'}else{'powershell'}; "
-                              "& {oh-my-posh init $__s --config '%s' | Invoke-Expression} 2>$null; "
-                              "$ErrorActionPreference='Continue'; "
-                              % pt.replace("'", "''"))
+                    # Core=7 'pwsh') so PS7-only init code never runs in 5.1.
+                    # The path is PowerShell-quoted: ASCII and smart quotes doubled.
+                    setup += _powershell_theme_setup(pt)
                 spec = spec + ["-NoExit", "-Command", setup + PS_SHELL_INTEGRATION]
         # start the shell in: the requested dir (new tab/split inherits the
         # current tab's directory), else the configured start folder, else home —
@@ -3401,20 +3422,54 @@ class TerminalWidget(QWidget):
                 else:
                     parts.append(url.toString())
         elif md.hasText():
-            parts.append(md.text())
+            text = self._dropped_text(md.text())
+            if not text:
+                event.ignore()
+                return
+            self.setFocus()
+            self.scroll_offset = 0
+            self.backend.write(text)
+            event.acceptProposedAction()
+            return
         if not parts:
             event.ignore()
             return
-        # Quote for the shell in this pane. Newlines are stripped, and a path
-        # that cannot be quoted (cmd " or %) refuses the whole drop.
-        text = quote_dropped_text(parts, self.command)
-        if not text:
+        # The tab's shell may not be the program reading the paste. Double-quote
+        # only a path with no metacharacters; otherwise confirm the literal text.
+        planned = prepare_dropped_files(parts)
+        if planned is None:
+            event.ignore()
+            return
+        text, needs_confirm = planned
+        if needs_confirm and not self._confirm_drop(text):
             event.ignore()
             return
         self.setFocus()
         self.scroll_offset = 0
         self.backend.write(text)
         event.acceptProposedAction()
+
+    def _dropped_text(self, text):
+        """Control characters are removed, then the shared paste guard runs."""
+        cleaned = sanitize_dropped_text(text)
+        if cleaned is None:
+            return None
+        return guarded_paste(
+            cleaned,
+            bracketed=bool(getattr(self.backend, "bracketed_paste", False)),
+            protection=bool(SETTINGS.get("paste_protection", True)),
+            confirm=self._confirm_paste,
+        )
+
+    def _confirm_drop(self, text):
+        """Show the exact text a special-character drop would write."""
+        from PySide6.QtWidgets import QMessageBox
+        box = QMessageBox(self)
+        box.setWindowTitle(i18n.t("drop.title"))
+        box.setText(i18n.t("drop.confirm") + "\n\n" + text)
+        box.setStandardButtons(QMessageBox.Ok | QMessageBox.Cancel)
+        box.setDefaultButton(QMessageBox.Cancel)
+        return box.exec() == QMessageBox.Ok
 
     def _confirm_paste(self, text):
         from PySide6.QtWidgets import QMessageBox
@@ -5527,7 +5582,9 @@ class MainWindow(QWidget):
         save_settings()
         # also apply live to open PowerShell terminals sitting at a prompt.
         # Call the helper the session already defined (no echoed function blob).
-        cmd = "__et_set_prompt '%s'\r" % path.replace("'", "''")
+        cmd = _powershell_set_prompt(path)
+        if not cmd:
+            return
         for t in self.findChildren(TerminalWidget):
             cs = " ".join(t.command) if isinstance(t.command, list) else str(t.command)
             if ("powershell" in cs.lower() or "pwsh" in cs.lower()) and not t.backend.alt_screen:

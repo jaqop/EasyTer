@@ -138,7 +138,7 @@ def _check_render(m):
 def _check_terminal(m):
     assert m._quote_shell_path(r"C:\Program Files\a.txt") == r"'C:\Program Files\a.txt'"
     assert m._quote_shell_path(r"C:\plain.txt") == r"'C:\plain.txt'"
-    assert m._quote_shell_path("a\r\nb") == "'ab'"
+    assert m._quote_shell_path("a\r\nb") is None
 
 
 def _check_window(m):

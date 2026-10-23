@@ -2,11 +2,13 @@
 """ثيمات موجِّه oh-my-posh: سرد + قراءة الحاليّ + تطبيق.
 
 التطبيق يحدّث **السطر المُدار** فقط داخل ملفّ تعريف PowerShell ($PROFILE):
-    oh-my-posh init pwsh --config "<مسار الثيم>" | Invoke-Expression
+    oh-my-posh init pwsh --config '<مسار الثيم>' | Invoke-Expression
 فلا نلمس أيّ سطرٍ آخر. التبويبات الجديدة تُظهر الموجِّه الجديد.
 """
 import os
 import re
+
+from .shellquote import quote_shell_path
 
 # العشرة المشهورة (بالترتيب)
 FAMOUS = [
@@ -20,7 +22,13 @@ FEATURED = ["kali"] + FAMOUS
 THEMES_DIR = os.environ.get("POSH_THEMES_PATH") or os.path.join(
     os.path.expanduser("~"), ".poshthemes")
 
-_INIT_RE = re.compile(r'(oh-my-posh init pwsh --config ")([^"]+)(")')
+# The managed line is single-quoted PowerShell. A legacy double-quoted line is
+# still recognized so it can be rewritten. Group 1 is the single-quoted body
+# (ASCII quotes doubled). Group 2 is the legacy double-quoted body.
+_INIT_RE = re.compile(
+    r"""oh-my-posh init pwsh --config (?:'((?:[^']|'')*)'|"([^"]*)")"""
+)
+_THEME_NAME = re.compile(r"[A-Za-z0-9._-]+\Z")
 
 
 def profile_path():
@@ -41,6 +49,19 @@ def available():
     return front + rest
 
 
+def _theme_name(raw, single_quoted):
+    if single_quoted:
+        raw = _PS_SINGLE_QUOTES.sub(lambda m: m.group(0)[0], raw)
+    base = os.path.basename(raw)
+    if base.lower().endswith(".omp.json"):
+        return base[:-len(".omp.json")]
+    return None
+
+
+# Same five characters quote_shell_path doubles inside a PowerShell single quote.
+_PS_SINGLE_QUOTES = re.compile("['\u2018\u2019\u201a\u201b]{2}")
+
+
 def current():
     """اسم الثيم المضبوط حاليًّا في $PROFILE، أو None."""
     try:
@@ -48,13 +69,22 @@ def current():
     except OSError:
         return None
     m = _INIT_RE.search(txt)
-    if m:
-        return os.path.basename(m.group(2)).replace(".omp.json", "")
-    return None
+    if not m:
+        return None
+    if m.group(1) is not None:
+        return _theme_name(m.group(1), True)
+    return _theme_name(m.group(2), False)
 
 
 def set_theme(name):
-    """يحدّث مسار --config في السطر المُدار. يرجع True عند النجاح."""
+    """يحدّث مسار --config في السطر المُدار. يرجع True عند النجاح.
+
+    The theme name has to be a plain filename. The path is then PowerShell
+    single-quoted, so a quote or ``$(...)`` in the themes directory cannot
+    run when PowerShell starts.
+    """
+    if not isinstance(name, str) or not _THEME_NAME.fullmatch(name):
+        return False
     path = profile_path()
     try:
         txt = open(path, encoding="utf-8-sig").read()
@@ -63,7 +93,11 @@ def set_theme(name):
     theme_path = os.path.join(THEMES_DIR, name + ".omp.json")
     if not os.path.exists(theme_path):
         return False
-    new, n = _INIT_RE.subn(lambda m: m.group(1) + theme_path + m.group(3), txt, count=1)
+    quoted = quote_shell_path(theme_path, "powershell")
+    if not quoted:
+        return False
+    replacement = "oh-my-posh init pwsh --config " + quoted
+    new, n = _INIT_RE.subn(lambda _m: replacement, txt, count=1)
     if n == 0:
         return False
     try:
