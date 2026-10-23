@@ -108,6 +108,12 @@ REJECTED = [
     r"C:\CON.",
     r"C:\CON .txt",
     r"C:\NUL\..\Users",
+    r"C:\CONIN$",
+    r"C:\CONOUT$",
+    r"C:\CLOCK$",
+    r"C:\foo\CONIN$.txt",
+    r"C:\foo\CONOUT$.txt",
+    r"C:\CLOCK$.txt",
     # quotes and commas
     r"C:\foo,bar\a.txt",
     'C:\\foo"bar\\a.txt',
@@ -611,3 +617,225 @@ def test_argv_never_stats_a_rejected_path(monkeypatch):
         if ntpath.isabs(path):
             assert fresh == [], (path, fresh)
             assert result is None
+
+
+def test_gate_keeps_the_original_spelling():
+    ligature = "C:\\Users\\\ufb01le.txt"
+    assert accept_local_path(ligature) == ligature
+    dotted = "C:\\Users\\.\\\ufb01le.txt"
+    assert accept_local_path(dotted) == ligature
+    assert accept_local_path("C:\\Users\\\uff0fx") is None
+
+
+@pytest.mark.parametrize("kind", [0, 1, 4])
+def test_blocked_drive_never_reaches_the_filesystem(kind, monkeypatch):
+    import EasyTer
+    from easyterpro import localpath
+
+    localpath.clear_drive_type_cache()
+    monkeypatch.setattr(localpath, "_query_drive_type", lambda _root: kind)
+    calls = []
+    monkeypatch.setattr(os.path, "isdir", lambda path: calls.append(("isdir", path)) or True)
+    monkeypatch.setattr(os.path, "isfile", lambda path: calls.append(("isfile", path)) or True)
+    monkeypatch.setattr(os.path, "exists", lambda path: calls.append(("exists", path)) or True)
+    try:
+        assert localpath.local_drive_ok(r"C:\proj\a.txt") is False
+        assert EasyTer.existing_local_dir(r"C:\proj") is None
+        assert EasyTer.existing_local_file(r"C:\proj\a.txt") is False
+        assert calls == []
+        assert localpath.hover_file_reference(r"C:\proj\a.txt") is False
+    finally:
+        localpath.clear_drive_type_cache()
+
+
+def test_drive_type_is_cached_per_letter(monkeypatch):
+    from easyterpro import localpath
+
+    localpath.clear_drive_type_cache()
+    calls = []
+
+    def query(root):
+        calls.append(root)
+        return 3
+
+    monkeypatch.setattr(localpath, "_query_drive_type", query)
+    try:
+        assert localpath.local_drive_ok(r"C:\a") is True
+        assert localpath.local_drive_ok(r"c:\b") is True
+        assert localpath.local_drive_ok(r"D:\a") is True
+        assert calls == ["C:\\", "D:\\"]
+        assert localpath.cached_drive_ok(r"C:\z") is True
+        assert localpath.hover_file_reference(r"Z:\share\a.txt") is True
+    finally:
+        localpath.clear_drive_type_cache()
+
+
+def test_hover_does_not_stat_or_probe_drives(monkeypatch):
+    import EasyTer
+    from easyterpro import localpath
+
+    localpath.clear_drive_type_cache()
+
+    def boom(*_args, **_kwargs):
+        raise AssertionError("filesystem or drive probe")
+
+    monkeypatch.setattr(os.path, "isfile", boom)
+    monkeypatch.setattr(os.path, "isdir", boom)
+    monkeypatch.setattr(os, "stat", boom)
+    monkeypatch.setattr(localpath, "_query_drive_type", boom)
+    try:
+        assert localpath.hover_file_reference(r"C:\proj\src\app.py") is True
+        widget = EasyTer.TerminalWidget.__new__(EasyTer.TerminalWidget)
+        widget.sel_anchor = None
+        widget._url_at = lambda _pos: None
+        widget._file_at = boom
+        widget._file_candidate = lambda _pos: (r"C:\proj\src\app.py", 12)
+        widget.setCursor = lambda *_a, **_k: None
+        widget.unsetCursor = lambda: None
+
+        class _Event:
+            def buttons(self):
+                return EasyTer.Qt.NoButton
+
+            def modifiers(self):
+                return EasyTer.Qt.ControlModifier
+
+            def position(self):
+                return None
+
+        widget.mouseMoveEvent(_Event())
+    finally:
+        localpath.clear_drive_type_cache()
+
+
+def test_click_relative_slashes_and_home(monkeypatch):
+    import EasyTer
+
+    def expanduser(path):
+        if path == "~":
+            return r"C:\Users\me"
+        return path
+
+    monkeypatch.setattr(os.path, "expanduser", expanduser)
+    assert EasyTer.resolve_click_path("src/app.py", r"C:\proj") == r"C:\proj\src\app.py"
+    assert EasyTer.resolve_click_path("src/app.py:12", r"C:\proj") == r"C:\proj\src\app.py"
+    assert EasyTer.resolve_click_path("src/app.py:12:3", r"C:\proj") == r"C:\proj\src\app.py"
+    assert EasyTer.resolve_click_path("~/x.py", r"C:\elsewhere") == r"C:\Users\me\x.py"
+    assert EasyTer.resolve_click_path("~/dir/x.py:4", r"C:\elsewhere") == r"C:\Users\me\dir\x.py"
+    assert EasyTer.resolve_click_path("C:/src/app.py", r"C:\proj") == r"C:\src\app.py"
+    assert EasyTer.resolve_click_path(r"C:\src/app.py", r"C:\proj") is None
+    assert EasyTer.resolve_click_path("//evil/share/a.py", r"C:\proj") is None
+
+
+def test_osc6969_confirm_does_not_stack(monkeypatch):
+    import EasyTer
+
+    widget = EasyTer.TerminalWidget.__new__(EasyTer.TerminalWidget)
+    widget._session = lambda: None
+    shown = []
+
+    def confirm(_parent, path):
+        shown.append(path)
+        widget._on_edit_file(r"C:\b\two.txt")
+        return False
+
+    monkeypatch.setattr(EasyTer, "confirm_local_open", confirm)
+    monkeypatch.setattr(EasyTer, "EDIT_CONFIRM_INTERVAL", 60.0)
+    widget._on_edit_file(r"C:\a\one.txt")
+    widget._on_edit_file(r"C:\c\three.txt")
+    assert shown == [r"C:\a\one.txt"]
+    widget._edit_confirm_not_before = 0.0
+    widget._on_edit_file(r"C:\d\four.txt")
+    assert shown == [r"C:\a\one.txt", r"C:\d\four.txt"]
+
+
+def test_load_file_skips_a_remote_drive(qapp, monkeypatch):
+    import EasyTer
+    from easyterpro import localpath
+
+    localpath.clear_drive_type_cache()
+    monkeypatch.setattr(localpath, "_query_drive_type", lambda _root: 4)
+    calls = install_guard(monkeypatch)
+    editor = EasyTer.EditorWidget()
+    try:
+        editor.load_file(r"C:\Users\x\a.txt")
+        assert editor.path is None
+        assert calls == []
+    finally:
+        localpath.clear_drive_type_cache()
+
+
+def test_open_dialog_does_not_gate_a_user_path(qapp, monkeypatch):
+    import EasyTer
+    from io import StringIO
+
+    unc = r"\\files\share\note.txt"
+    assert accept_local_path(unc) is None
+    monkeypatch.setattr(EasyTer.QFileDialog, "getOpenFileName", lambda *_a, **_k: (unc, ""))
+    monkeypatch.setattr(EasyTer, "accept_local_path", lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("gate")))
+    monkeypatch.setattr(EasyTer, "local_drive_ok", lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("drive")))
+    monkeypatch.setattr("builtins.open", lambda file, *_a, **_k: StringIO("from-share"))
+    editor = EasyTer.EditorWidget()
+    editor.open_dialog()
+    assert editor.path == unc
+    assert editor._user_chosen is True
+    assert editor.edit.toPlainText() == "from-share"
+
+
+def test_save_as_does_not_gate_a_user_path(qapp, monkeypatch):
+    import tempfile
+
+    import EasyTer
+
+    unc = r"\\files\share\note.txt"
+    assert accept_local_path(unc) is None
+    monkeypatch.setattr(EasyTer.QFileDialog, "getSaveFileName", lambda *_a, **_k: (unc, ""))
+    monkeypatch.setattr(EasyTer, "accept_local_path", lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("gate")))
+    monkeypatch.setattr(EasyTer, "local_drive_ok", lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("drive")))
+    saved = {}
+
+    def mkstemp(**kwargs):
+        saved["dir"] = kwargs.get("dir")
+        return 7, unc + ".tmp"
+
+    class _Handle:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def write(self, text):
+            saved["text"] = text
+
+    monkeypatch.setattr(tempfile, "mkstemp", mkstemp)
+    monkeypatch.setattr(os, "fdopen", lambda *_a, **_k: _Handle())
+    monkeypatch.setattr(os, "replace", lambda _src, dst: saved.__setitem__("dst", dst))
+    editor = EasyTer.EditorWidget()
+    editor.edit.setPlainText("body")
+    editor.save_as()
+    assert editor.path == unc
+    assert editor._user_chosen is True
+    assert saved["dst"] == unc
+    assert saved["text"] == "body"
+    assert saved["dir"] == ntpath.dirname(unc)
+    assert saved["dir"].startswith("\\\\")
+
+
+def test_gated_save_keeps_the_arabic_error(qapp):
+    import EasyTer
+    import i18n
+
+    i18n.set_language("ar")
+    try:
+        editor = EasyTer.EditorWidget()
+        editor.path = r"\\evil\share\secret.txt"
+        editor._user_chosen = False
+        editor.edit.setPlainText("nope")
+        editor.save()
+        assert editor.path is None
+        assert editor.header.text() == i18n.t("editor.save_rejected")
+        assert "قرص محلي" in editor.header.text()
+        assert editor.header.text() != "  ✎ " + i18n.t("editor.untitled")
+    finally:
+        i18n.set_language("en")

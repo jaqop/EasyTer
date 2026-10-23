@@ -16,10 +16,11 @@ calls the filesystem.
 
 Before the check it percent-decodes (repeatedly) and applies NFKC, so a
 separator hidden as `%5C`, `%2F`, `%255C`, or a fullwidth / small solidus is
-judged as the separator it becomes. The decoded spelling and the on-disk
-spelling both have to pass. The returned string is the on-disk spelling,
-which is what a later `isdir` or `open` would receive. It is normalized with
-`ntpath.normpath` and checked again afterwards.
+judged as the separator it becomes. The decoded spelling and the NFKC
+spelling both have to pass. NFKC is only a check: the returned string keeps
+the original characters, so a name such as `ﬁle.txt` is not rewritten to
+`file.txt`. `.` and `..` are still collapsed with `ntpath.normpath`, and
+that normalized result is checked again.
 
 Accepted: an absolute path with a drive letter, after that normalization.
 `C:\Users\x` and `D:\proj\مشروع` pass. `..` and `.` are collapsed first, and
@@ -36,15 +37,17 @@ Rejected:
   ALM). These can also spoof the path shown in a confirmation dialog.
 - A `:` after the drive letter (an NTFS alternate data stream), including one
   that `normpath` would later walk out of with `..`.
-- DOS device names in any component: `CON`, `NUL`, `PRN`, `AUX`, `COM0`–`COM9`,
-  `LPT0`–`LPT9`, including `NUL.txt`, trailing dots, and trailing spaces.
+- DOS device names in any component: `CON`, `NUL`, `PRN`, `AUX`, `CONIN$`,
+  `CONOUT$`, `CLOCK$`, `COM0`–`COM9`, `LPT0`–`LPT9`, including `NUL.txt`,
+  trailing dots, and trailing spaces.
 - `"` and `,`.
 - Anything that is not a drive-absolute path (`C:relative`, `\Windows`, a
   POSIX path).
 
-A mapped drive letter (`Z:\...`) is a local path for this check. A literal
-UNC home (`\\server\users\name`) is not. Shells then start at the system
-drive root instead of that share.
+A mapped drive letter (`Z:\...`) passes this lexical check. `GetDriveTypeW`
+then rejects it when the letter is remote, missing, or unknown. A literal
+UNC home (`\\server\users\name`) fails the lexical check. Shells then start
+at the system drive root instead of that share.
 
 ### Where it is applied
 
@@ -56,9 +59,21 @@ drive root instead of that share.
   before the path is converted into a filesystem call.
 - **OSC 6969** (`edit`). A rejected path is not emitted, not opened, and not
   written into the session file. An accepted path is shown verbatim in a
-  confirmation dialog; nothing is opened if the dialog is cancelled.
-- **Ctrl+click** on a file reference. Relative paths are joined lexically with
-  the shell cwd, then gated, and only then passed to `isfile`.
+  confirmation dialog; nothing is opened if the dialog is cancelled. Each
+  terminal shows at most one of these dialogs at a time. Further requests
+  while it is open are dropped, and another dialog cannot open until one
+  second after the previous one closed.
+- **Ctrl+click** on a file reference. A relative path such as `src/app.py:12`
+  has its line suffix removed and its `/` converted to `\` before it is
+  joined with the shell cwd. `~/x.py` is expanded against the home directory.
+  The joined path is gated, and only then passed to `isfile`. Moving the
+  mouse with Ctrl held does not call `isfile` or `GetDriveTypeW`; the hand
+  cursor uses the lexical result only. A drive letter already known to be
+  remote, missing, or unknown is not hoverable.
+- **Drive type.** After the gate and before `isdir`, `isfile`, or `open` on
+  a terminal-derived path, `GetDriveTypeW` must report a local drive.
+  `DRIVE_REMOTE`, `DRIVE_NO_ROOT_DIR`, and `DRIVE_UNKNOWN` are rejected. The
+  result is cached per drive letter.
 - **Start directory** for new tabs and splits (`resolve_start_dir`), and the
   folder argument on the command line (`start_dir_from_argv`). Relative
   command-line arguments are joined lexically with the process cwd.
@@ -68,6 +83,18 @@ drive root instead of that share.
   gate accepts it. `build_node` runs the gate again before the editor opens
   the file, so a hand-edited `easyter_session.json` cannot introduce a UNC
   path.
+- **File dialogs.** A path the user picks in Open or Save As is not terminal
+  output, and the gate is not applied to it. A failed save of a path that
+  *did* come from the terminal leaves an error in the editor header instead
+  of clearing it.
+
+### Local symlinks
+
+The gate does not resolve symlinks, because that resolution is a filesystem
+call. A local path such as `C:\Users\x\link` passes even when the link's
+target is a UNC path, and opening it makes Windows authenticate to that
+target. Creating the link requires the symlink privilege (or Developer
+Mode). EasyTer does not create it.
 
 Dragging a file onto the terminal, OSC 52, paste protection, and the
 oh-my-posh prompt are separate from this gate.

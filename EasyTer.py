@@ -30,7 +30,10 @@ import time
 import unicodedata
 import webbrowser
 
-from easyterpro.localpath import accept_local_path, osc7_host_ok
+from easyterpro.localpath import (
+    accept_local_path, cached_drive_ok, hover_file_reference, local_drive_ok,
+    osc7_host_ok,
+)
 
 
 # --- Optional startup/paint profiling (set EASYTER_PROFILE=1) --------------
@@ -343,7 +346,7 @@ def existing_local_dir(path):
     authenticates to a UNC host.
     """
     accepted = accept_local_path(path) if isinstance(path, str) else None
-    if not accepted:
+    if not accepted or not local_drive_ok(accepted):
         return None
     try:
         if os.path.isdir(accepted):
@@ -351,6 +354,20 @@ def existing_local_dir(path):
     except OSError:
         return None
     return None
+
+
+def existing_local_file(path):
+    """True when ``path`` is on a local drive and ``isfile`` says it exists.
+
+    ``local_drive_ok`` runs first, so a remote or disconnected letter is never
+    passed to ``isfile``.
+    """
+    if not isinstance(path, str) or not local_drive_ok(path):
+        return False
+    try:
+        return os.path.isfile(path)
+    except OSError:
+        return False
 
 
 def _drive_root_fallback():
@@ -395,19 +412,65 @@ def start_dir_from_argv(args):
     return None
 
 
+# Compiler-style suffix on a relative reference: src/app.py:12 or :12:3.
+# Not applied to a drive path, where a colon is an alternate data stream.
+_CLICK_LINE_SUFFIX = re.compile(r"(?::\d+){1,2}$")
+
+
+def _click_has_drive(text):
+    return len(text) >= 2 and text[0].isascii() and text[0].isalpha() and text[1] == ":"
+
+
+def _expand_click_home(text):
+    """Expand ``~`` / ``~user`` and turn ``/`` in the remainder into ``\\``.
+
+    ``os.path.expanduser('~/x.py')`` on Windows keeps the forward slash, and
+    the gate then rejects the mixed path. The tail is converted first.
+    """
+    rest = text[1:]
+    user = ""
+    if rest[:1] in ("/", "\\"):
+        tail = rest[1:]
+    else:
+        cut = next((i for i, ch in enumerate(rest) if ch in "/\\"), None)
+        if cut is None:
+            return os.path.expanduser("~" + rest) if rest else os.path.expanduser("~")
+        user = rest[:cut]
+        tail = rest[cut + 1:]
+    home = os.path.expanduser("~" + user)
+    tail = tail.replace("/", "\\")
+    if not tail:
+        return home
+    return ntpath.join(home, tail)
+
+
 def resolve_click_path(cand, cwd):
     """Absolute local path for a Ctrl+click file reference, or None.
 
-    Relative references join the shell cwd (itself from OSC). The joined
-    string is gated before the caller may ``isfile`` it.
+    Relative references (``src/app.py``, ``src/app.py:12``) convert ``/`` to
+    ``\\`` before joining the shell cwd. ``~/x.py`` expands against the home
+    directory, not the cwd. The joined string is gated before the caller may
+    ``isfile`` it.
     """
     if not isinstance(cand, str) or not cand:
         return None
-    expanded = os.path.expanduser(cand)
-    if not ntpath.isabs(expanded):
+    text = cand
+    if not _click_has_drive(text):
+        text = _CLICK_LINE_SUFFIX.sub("", text)
+        if not text:
+            return None
+    if text.startswith("~"):
+        text = _expand_click_home(text)
+    elif not ntpath.isabs(text):
+        text = text.replace("/", "\\")
         base = cwd if isinstance(cwd, str) and cwd else os.getcwd()
-        expanded = ntpath.join(base, expanded)
-    return accept_local_path(expanded)
+        text = ntpath.join(base, text)
+    return accept_local_path(text)
+
+
+# Minimum gap between OSC 6969 confirmation dialogs on one terminal.
+# A program that emits the sequence in a loop must not stack modals.
+EDIT_CONFIRM_INTERVAL = 1.0
 
 
 def confirm_local_open(parent, path):
@@ -1468,7 +1531,7 @@ class PtyBackend(QObject):
         if not saw or raw is None:
             return
         accepted = accept_local_path(raw)
-        if not accepted:
+        if not accepted or not local_drive_ok(accepted):
             return
         try:
             if os.path.isdir(accepted) and accepted != self.cwd:
@@ -1698,6 +1761,8 @@ class TerminalWidget(QWidget):
         self.setMouseTracking(True)   # needed for Ctrl+hover link hinting
         self.setAcceptDrops(True)     # drop files onto a pane → insert their path at the prompt
         self._exited = False
+        self._edit_confirm_open = False
+        self._edit_confirm_not_before = 0.0
         self._start_backend(self.command)
 
         self.resize(int(self.cols * self.cw), self.rows * self.ch)
@@ -1760,11 +1825,23 @@ class TerminalWidget(QWidget):
 
         The path is gated again here (the signal may outlive a future caller),
         and a confirmation dialog shows the exact path before anything is opened.
+        One dialog per terminal: a second request while it is open is dropped,
+        and another cannot open until ``EDIT_CONFIRM_INTERVAL`` has passed.
         """
         accepted = accept_local_path(path)
-        if not accepted:
+        if not accepted or not local_drive_ok(accepted):
             return
-        if not confirm_local_open(self, accepted):
+        if getattr(self, "_edit_confirm_open", False):
+            return
+        if time.monotonic() < getattr(self, "_edit_confirm_not_before", 0.0):
+            return
+        self._edit_confirm_open = True
+        try:
+            ok = confirm_local_open(self, accepted)
+        finally:
+            self._edit_confirm_open = False
+            self._edit_confirm_not_before = time.monotonic() + EDIT_CONFIRM_INTERVAL
+        if not ok:
             return
         sess = self._session()
         if sess is None:
@@ -2788,12 +2865,12 @@ class TerminalWidget(QWidget):
                 return m.group(0)
         return None
 
-    def _file_at(self, pos):
-        """(path, line) of the existing file reference under the mouse, or None.
+    def _file_candidate(self, pos):
+        """(path, line) of the file reference under the mouse, or None.
 
-        Matches compiler/pytest/grep-style references with an optional :line
-        suffix. Relative paths resolve against the shell's cwd (OSC 9;9), and
-        only paths that actually exist on disk become clickable."""
+        Lexical only: no ``isfile`` and no ``GetDriveTypeW``. A drive letter
+        already known to be remote, missing, or unknown is skipped.
+        """
         abs_line, col = self._pos_to_cell(pos)
         with self.backend.lock:
             screen = self.backend.screen
@@ -2810,14 +2887,31 @@ class TerminalWidget(QWidget):
             if mm:
                 cand, ln = mm.group(1), int(mm.group(2))
             resolved = resolve_click_path(cand, self.backend.cwd)
-            if not resolved:
+            if not resolved or cached_drive_ok(resolved) is False:
                 continue
-            try:
-                if os.path.isfile(resolved):
-                    return resolved, ln
-            except OSError:
-                continue
+            return resolved, ln
         return None
+
+    def _file_at(self, pos):
+        """(path, line) of the existing file reference under the mouse, or None.
+
+        Matches compiler/pytest/grep-style references with an optional :line
+        suffix. Relative paths resolve against the shell's cwd (OSC 9;9).
+        ``isfile`` runs only for a drive that ``local_drive_ok`` accepts, and
+        only from a click — hover uses ``_file_candidate`` instead.
+        """
+        hit = self._file_candidate(pos)
+        if hit is None:
+            return None
+        resolved, ln = hit
+        if existing_local_file(resolved):
+            return resolved, ln
+        return None
+
+    def _hover_file(self, pos):
+        """True when Ctrl+hover may show the hand cursor. No filesystem call."""
+        hit = self._file_candidate(pos)
+        return bool(hit) and hover_file_reference(hit[0])
 
     def _open_in_editor(self, path, line=None):
         """Open the file in this session's editor pane (Ctrl+click a path).
@@ -2864,7 +2958,7 @@ class TerminalWidget(QWidget):
             self.update()
         elif (event.modifiers() & Qt.ControlModifier) and (
                 self._url_at(event.position())
-                or self._file_at(event.position()) is not None):
+                or self._hover_file(event.position())):
             self.setCursor(Qt.PointingHandCursor)   # hint a clickable link/file
         else:
             self.unsetCursor()
@@ -4371,6 +4465,7 @@ class EditorWidget(QWidget):
     def __init__(self, path=None, title=None):
         super().__init__()
         self.path = None
+        self._user_chosen = False       # True only for a path picked in a file dialog
         self.custom_title = title       # manual title (double-click the header)
         v = QVBoxLayout(self)
         v.setContentsMargins(0, 0, 0, 0)
@@ -4483,7 +4578,9 @@ class EditorWidget(QWidget):
     def open_dialog(self):
         path, _ = QFileDialog.getOpenFileName(self, i18n.t("dialog.open_file"))
         if path:
-            self.open_path(path)
+            # The user picked this path. It is not terminal output, so the
+            # lexical gate does not apply (a share they opened on purpose).
+            self.open_path(path, user_chosen=True)
 
     def goto_line(self, n):
         """Move the cursor to 1-based line n and center it in the view."""
@@ -4497,8 +4594,9 @@ class EditorWidget(QWidget):
         """Open an existing file, or set up a brand-new one (empty buffer whose
         first Ctrl+S creates it) — used by the shell's `edit <file>` command."""
         accepted = accept_local_path(path)
-        if not accepted:
+        if not accepted or not local_drive_ok(accepted):
             return
+        self._user_chosen = False
         try:
             exists = os.path.exists(accepted)
         except OSError:
@@ -4511,14 +4609,19 @@ class EditorWidget(QWidget):
             self.edit.document().setModified(False)
             self._update_header()
 
-    def open_path(self, path):
-        accepted = accept_local_path(path)
-        if not accepted:
-            # Leave the buffer alone. Replacing it would risk a later save
-            # writing that message over the file that was already open.
+    def open_path(self, path, user_chosen=False):
+        if user_chosen:
+            target = path if isinstance(path, str) and path else None
+        else:
+            target = accept_local_path(path)
+            if not target or not local_drive_ok(target):
+                # Leave the buffer alone. Replacing it would risk a later save
+                # writing that message over the file that was already open.
+                return
+        if not target:
             return
         try:
-            with open(accepted, encoding="utf-8", errors="replace") as fh:
+            with open(target, encoding="utf-8", errors="replace") as fh:
                 data = fh.read()
             # disable repaints during the bulk insert: much faster for big files
             self.edit.setUpdatesEnabled(False)
@@ -4526,7 +4629,8 @@ class EditorWidget(QWidget):
                 self.edit.setPlainText(data)
             finally:
                 self.edit.setUpdatesEnabled(True)
-            self.path = accepted
+            self.path = target
+            self._user_chosen = bool(user_chosen)
             self.edit.document().setModified(False)
         except Exception as ex:
             self.edit.setPlainText(i18n.t("editor.open_failed", ex=ex))
@@ -4535,24 +4639,28 @@ class EditorWidget(QWidget):
     def save(self):
         if not self.path:
             return self.save_as()
-        accepted = accept_local_path(self.path)
-        if not accepted:
-            self.path = None
-            self.header.setText(i18n.t("editor.save_failed", ex="rejected path"))
-            self._update_header()
-            return
-        self.path = accepted
+        if getattr(self, "_user_chosen", False):
+            target = self.path
+        else:
+            target = accept_local_path(self.path)
+            if not target or not local_drive_ok(target):
+                # Keep this text. _update_header() would replace it with the
+                # filename (or "Untitled" once the path is cleared).
+                self.header.setText(i18n.t("editor.save_rejected"))
+                self.path = None
+                return
+            self.path = target
         try:
             # write to a sibling temp file then atomically replace, so a failed or
             # interrupted write (disk full, dropped network drive) can't destroy the
             # original file the way truncating it with open(..., "w") would.
             # dirname is lexical; abspath would call GetFullPathName on Windows.
-            d = ntpath.dirname(accepted) or accepted
+            d = ntpath.dirname(target) or target
             fd, tmp = tempfile.mkstemp(dir=d, prefix=".easyter-", suffix=".tmp")
             try:
                 with os.fdopen(fd, "w", encoding="utf-8") as fh:
                     fh.write(self.edit.toPlainText())
-                os.replace(tmp, accepted)
+                os.replace(tmp, target)
             except Exception:
                 try:
                     os.unlink(tmp)
@@ -4568,6 +4676,7 @@ class EditorWidget(QWidget):
         path, _ = QFileDialog.getSaveFileName(self, i18n.t("dialog.save_as"))
         if path:
             self.path = path
+            self._user_chosen = True
             self.save()
 
     def _session(self):

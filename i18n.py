@@ -82,6 +82,7 @@ STRINGS = {
         # editor
         "editor.rename_tip": "Double-click to rename",
         "editor.save_failed": "  ✎ Save failed: {ex}",
+        "editor.save_rejected": "  ✎ Could not save. This path is not on a local drive.",
         "editor.untitled": "Untitled",
         "editor.open_failed": "# Could not open file: {ex}",
         "editor.header": "  ✎ Editor · {name}",
@@ -271,6 +272,7 @@ STRINGS = {
         "settings.cancel": "إلغاء",
         "editor.rename_tip": "نقر مزدوج لتغيير العنوان",
         "editor.save_failed": "  ✎ تعذّر الحفظ: {ex}",
+        "editor.save_rejected": "  ✎ تعذّر الحفظ. هذا المسار ليس على قرص محلي.",
         "editor.untitled": "بلا عنوان",
         "editor.open_failed": "# تعذّر فتح الملفّ: {ex}",
         "editor.header": "  ✎ محرّر · {name}",

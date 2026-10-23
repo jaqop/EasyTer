@@ -7,10 +7,13 @@ so a path from an OSC report (or derived from one) must never reach isdir,
 stat, open, startfile, or a child process until it has passed through
 ``accept_local_path``.
 
-The check is purely lexical. It does not call the filesystem: on Windows those
-calls are exactly the leak.
+``accept_local_path`` is purely lexical. It does not call the filesystem: on
+Windows those calls are exactly the leak. ``local_drive_ok`` is a separate
+check, used after the gate and before a filesystem call, that rejects drive
+letters ``GetDriveTypeW`` reports as remote, missing, or unknown.
 """
 
+import sys
 import ntpath
 import unicodedata
 import urllib.parse
@@ -20,10 +23,20 @@ from typing import Optional
 # the device, so the stem is compared, not the whole component. COM0/LPT0 are
 # reserved on current Windows the same way COM1 and LPT1 are.
 _DOS_DEVICES = frozenset(
-    ["CON", "PRN", "AUX", "NUL", "COM0", "LPT0"]
+    ["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$", "CLOCK$", "COM0", "LPT0"]
     + [f"COM{n}" for n in range(1, 10)]
     + [f"LPT{n}" for n in range(1, 10)]
 )
+
+# GetDriveTypeW values that must not be touched. REMOTE is a mapped share
+# (authenticates). NO_ROOT_DIR and UNKNOWN cover a missing or disconnected
+# letter, which can block the calling thread while Windows retries it.
+DRIVE_UNKNOWN = 0
+DRIVE_NO_ROOT_DIR = 1
+DRIVE_FIXED = 3
+DRIVE_REMOTE = 4
+_BLOCKED_DRIVE_TYPES = frozenset({DRIVE_UNKNOWN, DRIVE_NO_ROOT_DIR, DRIVE_REMOTE})
+_DRIVE_CACHE = {}
 
 # Bidi controls can hide a UNC prefix from the confirmation dialog and from a
 # reader skimming the path. Reject them rather than trying to display them.
@@ -46,13 +59,14 @@ def osc7_host_ok(host) -> bool:
 
 
 def accept_local_path(p) -> Optional[str]:
-    """Return a normalized ``X:\\...`` path, or None when ``p`` must not be used.
+    """Return a lexically normalized ``X:\\...`` path, or None.
 
-    Percent-decoding and NFKC run first, so a separator hidden as ``%5C``,
-    ``%2F``, or a fullwidth slash is visible to the same checks as a literal
-    one. The decoded spelling and the on-disk spelling both have to survive;
-    Windows itself does not percent-decode, and the returned string is the
-    on-disk spelling (the one a later isdir/open would actually receive).
+    Percent-decoding and NFKC run as checks, so a separator hidden as ``%5C``,
+    ``%2F``, or a fullwidth slash is visible to the same rules as a literal
+    one. The decoded spelling and the compatibility spelling both have to
+    survive. The returned string keeps the original characters: NFKC is not
+    written back, so a name like ``ﬁle.txt`` is not rewritten to ``file.txt``.
+    ``.`` and ``..`` are still collapsed with ``ntpath.normpath``.
     """
     if not isinstance(p, str) or _bad_chars(p):
         return None
@@ -61,18 +75,89 @@ def accept_local_path(p) -> Optional[str]:
     text = p.strip()
     if not text or _bad_chars(text):
         return None
-    text = unicodedata.normalize("NFKC", text)
-    if _bad_chars(text):
+    nfkc = unicodedata.normalize("NFKC", text)
+    if _bad_chars(nfkc):
         return None
-    decoded = _percent_decode(text)
+    decoded = _percent_decode(nfkc)
     if decoded is None:
         return None
     decoded = unicodedata.normalize("NFKC", decoded)
-    canon_text = _canonical_drive_path(text)
-    canon_decoded = _canonical_drive_path(decoded)
-    if canon_text is None or canon_decoded is None:
+    if _bad_chars(decoded):
         return None
-    return canon_text
+    if _canonical_drive_path(nfkc) is None or _canonical_drive_path(decoded) is None:
+        return None
+    return _canonical_drive_path(text)
+
+
+def clear_drive_type_cache():
+    """Drop cached ``GetDriveTypeW`` results. Tests use this between cases."""
+    _DRIVE_CACHE.clear()
+
+
+def cached_drive_ok(path):
+    """True or False if this drive letter was already classified, else None.
+
+    Does not call ``GetDriveTypeW``. Hover uses this so a disconnected
+    network drive is never probed on mouse move.
+    """
+    letter = _drive_letter(path)
+    if letter is None:
+        return None
+    return _DRIVE_CACHE.get(letter)
+
+
+def local_drive_ok(path) -> bool:
+    """False for ``DRIVE_REMOTE``, ``DRIVE_NO_ROOT_DIR``, and ``DRIVE_UNKNOWN``.
+
+    The result is cached per drive letter. Call this only after
+    ``accept_local_path``, and before ``isdir`` / ``isfile`` / ``open``.
+    """
+    letter = _drive_letter(path)
+    if letter is None:
+        return False
+    cached = _DRIVE_CACHE.get(letter)
+    if cached is not None:
+        return cached
+    try:
+        kind = _query_drive_type(letter + ":\\")
+    except OSError:
+        return False
+    ok = kind not in _BLOCKED_DRIVE_TYPES
+    _DRIVE_CACHE[letter] = ok
+    return ok
+
+
+def hover_file_reference(path) -> bool:
+    """Whether a resolved path may show the Ctrl+hover hand cursor.
+
+    A drive already known to be remote, missing, or unknown is not hoverable.
+    An uncached drive is: classifying it would call ``GetDriveTypeW`` on the
+    UI thread. This function does not call the filesystem.
+    """
+    if cached_drive_ok(path) is False:
+        return False
+    return _drive_letter(path) is not None
+
+
+def _drive_letter(path):
+    if not isinstance(path, str) or len(path) < 3 or path[1] != ":":
+        return None
+    letter = path[0]
+    if not letter.isascii() or not letter.isalpha():
+        return None
+    return letter.upper()
+
+
+def _query_drive_type(root):
+    """``GetDriveTypeW`` on Windows. Elsewhere every letter is a fixed drive.
+
+    Non-Windows hosts have no mapped-drive probe, and the lexical gate is
+    what the unit tests exercise there.
+    """
+    if sys.platform != "win32":
+        return DRIVE_FIXED
+    import ctypes
+    return int(ctypes.windll.kernel32.GetDriveTypeW(root))
 
 
 def _percent_decode(text: str) -> Optional[str]:
