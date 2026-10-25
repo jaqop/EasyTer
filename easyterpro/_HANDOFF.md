@@ -119,8 +119,9 @@ names its measurement so you can.
   (Counting `^    "` across the whole of `render.py` gives 17 — it catches quotes outside
   the literal. Match the block, not the file.)
 
-- **Test suite state on this machine: 1 failed, 351 passed, 16 errors.** CI's `TEST_FLOOR`
-  is 368 and CI is green, so this is a local-environment gap, not a regression — see Landmines.
+- **The suite is green: 368 passed, 0 skipped**, which matches CI's `TEST_FLOOR` exactly.
+  It needs `pytest-qt` installed into 3.14 — without it, 16 tests error with
+  `fixture 'qapp' not found` and one more fails for the reason under Landmines.
   Measured by: `C:\Python314\python.exe -m pytest -q`
 
 - **Both `C:\Python314` and `C:\Python315` can run the app; only 3.14 can run the tests.**
@@ -143,21 +144,27 @@ names its measurement so you can.
   jumped ahead on PATH; check with `where pythonw`.
   **Tests still require 3.14** — 3.15 has no pytest. See Testing.
 
-- **`pytest-qt` is missing from `C:\Python314`**, which is the entire cause of the 16 errors
-  above — every one is `fixture 'qapp' not found`, and `pytest.ini`'s `qt_api` option is
-  reported unknown. `pip install -r requirements-dev.txt` fixes it.
+- **A missing `pytest-qt` does not look like a missing `pytest-qt`.** Without it, 16 tests
+  error with `fixture 'qapp' not found` *and* `test_osc7_bad_host_never_stats` fails —
+  which reads like an NTLM-gate regression and is not one. `install_guard` patches
+  `os.path.exists` globally, so it also records calls made by Python's own import
+  machinery; with the Qt tests erroring out early, the stdlib modules that would otherwise
+  already be imported get imported inside the guarded window, and the test counts them. The
+  recorded paths are stdlib files such as `C:\Python314\Lib\urllib\__init__.py`, never the
+  UNC path under test, and `backend.cwd` is correctly left untouched throughout.
+  **Install `pytest-qt` before concluding anything about the gate**; the whole suite then
+  passes. Confirmed on 2026-10-25 by installing `pytest-qt==4.5.0` and re-running: 368
+  passed, that test among them.
   Check with: `C:\Python314\python.exe -c "import pytestqt"`
 
-- **The one failing test is probably an artefact of the guard, not a leak.**
-  `tests/test_local_path.py::test_osc7_bad_host_never_stats` fails because `install_guard`
-  patches `os.path.exists` *globally* and then records calls made by Python's own import
-  machinery — the recorded paths are stdlib files such as
-  `C:\Python314\Lib\urllib\__init__.py`, not the UNC path under test, and `backend.cwd` is
-  correctly left untouched. On CI those modules are already imported by the time the test
-  runs, so no calls are recorded.
-  (judgement — **not confirmed**; the run that would have proved it produced no output.
-  Re-derive before trusting it, and do not "fix" the gate on the strength of this entry.)
-  Reproduce with: `C:\Python314\python.exe -m pytest -q tests/test_local_path.py::test_osc7_bad_host_never_stats`
+- **`ruff` lints whatever `.gitignore` does not hide.** `respect-gitignore` is on by
+  default, so while `easyterpro/` was ignored the package was never linted; removing that
+  rule put its 25 Python modules in scope and immediately surfaced a dead `QFontMetrics` import
+  in `terminal.py`. Expect the same if another path is ever un-ignored. Only the
+  `--select F,E9` pass blocks CI; the full pass is `--exit-zero` and reports ~289
+  pre-existing style findings repo-wide that are deliberately not gates.
+  Reproduce the blocking pass with: `python -m ruff check --select F,E9 .`
+  (needs exactly `ruff==0.17.2`; `ruff.toml` sets `required-version` and refuses to run otherwise)
 
 - **`pythonw` silent crash.** Under `pythonw.exe`, `sys.stdout`/`sys.stderr` are `None`; any
   library that writes to them at import kills the app with **no error at all**. Both entry

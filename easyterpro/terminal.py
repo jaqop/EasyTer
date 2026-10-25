@@ -7,7 +7,7 @@
 
 from PySide6.QtCore import Qt, QRect, QPointF, Signal, QTimer
 from PySide6.QtGui import (
-    QFont, QFontMetrics, QFontMetricsF, QPainter, QColor, QPen, QKeyEvent,
+    QFont, QFontMetricsF, QPainter, QColor, QPen, QKeyEvent,
     QTextLayout, QTextCharFormat, QTextOption,
 )
 from PySide6.QtWidgets import QApplication, QWidget, QMenu, QScrollBar
