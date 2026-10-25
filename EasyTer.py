@@ -1081,16 +1081,51 @@ PLUGIN_DIR = os.path.join(os.path.expanduser("~"), ".easyter")
 PLUGIN_INIT = os.path.join(PLUGIN_DIR, "init.py")
 
 
+# What people write in a combo vs what Qt calls it.
+_KEY_ALIASES = {
+    "esc": "escape", "pgup": "pageup", "pgdn": "pagedown", "pgdown": "pagedown",
+    "del": "delete", "ins": "insert", "enter": "return", "ret": "return",
+    "pgeup": "pageup",
+}
+_QT_KEY_NAMES = None    # lazy: built once, on the first keybind
+
+
+def _qt_key_names():
+    """Lowercased Qt key name -> key value, from the Qt.Key enum.
+
+    dir(Qt) does not list the Key_* shortcuts in PySide6 - they are forwarded
+    dynamically - so the table has to come from Qt.Key.__members__.
+    """
+    global _QT_KEY_NAMES
+    if _QT_KEY_NAMES is None:
+        members = getattr(Qt.Key, "__members__", {}) or {}
+        _QT_KEY_NAMES = {n[4:].lower(): v for n, v in members.items()
+                         if n.startswith("Key_")}
+    return _QT_KEY_NAMES
+
+
 def _key_from_token(tok):
+    """Resolve one combo token to a Qt key, or None if there is no such key.
+
+    Matching is case-insensitive against the Qt names, because _parse_combo
+    lowercases and "Key_" + "pageup".capitalize() is Key_Pageup, which does
+    not exist. A single printable ASCII character resolves to its own key
+    code - Qt uses the uppercase ASCII value for those - so ` and - work too.
+    """
     tok = tok.strip()
-    if len(tok) == 1 and tok.isalpha():
-        return Qt.Key_A + (ord(tok.upper()) - ord("A"))
-    if len(tok) == 1 and tok.isdigit():
-        return Qt.Key_0 + int(tok)
-    try:
-        return getattr(Qt, "Key_" + tok.capitalize())
-    except Exception:
+    if not tok:
         return None
+    if len(tok) == 1 and tok.isascii() and tok.isalpha():
+        return Qt.Key_A + (ord(tok.upper()) - ord("A"))
+    if len(tok) == 1 and tok.isascii() and tok.isdigit():
+        return Qt.Key_0 + int(tok)
+    low = tok.lower()
+    key = _qt_key_names().get(_KEY_ALIASES.get(low, low))
+    if key is not None:
+        return key
+    if len(tok) == 1 and tok.isascii() and tok.isprintable():
+        return ord(tok.upper())
+    return None
 
 
 def kitty_encode_key(key, ctrl, alt, shift):
@@ -1147,13 +1182,21 @@ class _PluginAPI:
         self.commands = []          # (name, cb)
         self.hooks = {}             # event -> [cb]
         self.status_segments = []   # [cb]
-        self.ui_style = None        # extra QSS: a string or a function(colors)->string
+        # Private, because `ui_style` is also the decorator method below: an
+        # attribute of that name shadows it and makes @et.ui_style uncallable.
+        self._ui_style = None       # extra QSS: a string or a function(colors)->string
 
     def keybind(self, combo):
-        spec = _parse_combo(combo)
+        ctrl, alt, shift, key = _parse_combo(combo)
+        if key is None:
+            # Registering it anyway would append a binding with key None, which
+            # never matches a real QKeyEvent - it would look accepted and do
+            # nothing. Say so and skip it, so the rest of init.py still loads.
+            print(f"[easyter keybind] unknown key in {combo!r}; binding ignored")
 
         def deco(fn):
-            self.keybinds.append((*spec, fn, combo))
+            if key is not None:
+                self.keybinds.append((ctrl, alt, shift, key, fn, combo))
             return fn
         return deco
 
@@ -1172,11 +1215,11 @@ class _PluginAPI:
             @et.ui_style
             def _(c): return f'QTabBar::tab{{border-radius:0;}}'
         It is applied on top of the auto-derived theme style, so it tweaks/overrides as you wish."""
-        self.ui_style = qss
+        self._ui_style = qss
 
     def ui_style(self, fn):
         """Decorator equivalent to set_ui_style with a function: @et.ui_style then def _(colors):"""
-        self.ui_style = fn
+        self._ui_style = fn
         return fn
 
     def restyle(self):
@@ -5414,7 +5457,7 @@ class MainWindow(QWidget):
             f"QToolTip{{background:{c['chrome2']};color:{fg};border:1px solid {c['border']};}}"
         )
         # power-user style (Python): @et.ui_style or et.set_ui_style - applied on top of the derived one
-        extra = PLUGINS.ui_style
+        extra = PLUGINS._ui_style
         if extra is not None:
             try:
                 extra = extra(c) if callable(extra) else extra

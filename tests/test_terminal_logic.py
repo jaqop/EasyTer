@@ -1155,3 +1155,74 @@ def test_a_corrupt_config_no_longer_stops_startup(tmp_path, monkeypatch, setting
     monkeypatch.setattr(EasyTer, "CONFIG_PATH", str(bad))
     EasyTer.load_settings()
     EasyTer.apply_base_colors()          # raised TypeError before the fix
+
+
+def test_plugin_ui_style_decorator_is_not_shadowed_by_its_own_storage():
+    """@et.ui_style is documented in examples/init.py and could never work.
+
+    _PluginAPI.__init__ assigned self.ui_style = None, which shadows the
+    ui_style decorator method on the same class, so the decorator raised
+    TypeError: 'NoneType' object is not callable. load_plugins runs init.py as
+    one exec, so that also abandoned every keybind, command, hook and status
+    segment declared after the line.
+    """
+    api = EasyTer._PluginAPI()
+
+    @api.ui_style
+    def _style(colors):
+        return "QWidget{}"
+
+    assert callable(api._ui_style)
+    assert api._ui_style({}) == "QWidget{}"
+
+    api.set_ui_style("QTabBar{}")
+    assert api._ui_style == "QTabBar{}"
+
+
+def test_key_from_token_resolves_the_tokens_users_actually_write():
+    """Qt's names are camel-case and "Key_" + "pageup".capitalize() is wrong.
+
+    _key_from_token used getattr(Qt, "Key_" + tok.capitalize()), so PageUp
+    became Key_Pageup, which does not exist. Abbreviations and punctuation
+    failed outright. Each returned None, and the binding was registered anyway.
+    """
+    from PySide6.QtCore import Qt
+    assert EasyTer._key_from_token("pageup") == Qt.Key_PageUp
+    assert EasyTer._key_from_token("pgup") == Qt.Key_PageUp
+    assert EasyTer._key_from_token("esc") == Qt.Key_Escape
+    assert EasyTer._key_from_token("escape") == Qt.Key_Escape
+    assert EasyTer._key_from_token("`") == Qt.Key_QuoteLeft
+    assert EasyTer._key_from_token("-") == Qt.Key_Minus
+    assert EasyTer._key_from_token("backtab") == Qt.Key_Backtab
+    # the cases that already worked must keep working
+    assert EasyTer._key_from_token("k") == Qt.Key_K
+    assert EasyTer._key_from_token("5") == Qt.Key_5
+    assert EasyTer._key_from_token("f5") == Qt.Key_F5
+    assert EasyTer._key_from_token("space") == Qt.Key_Space
+    assert EasyTer._key_from_token("comma") == Qt.Key_Comma
+    # and a genuine typo still resolves to nothing
+    assert EasyTer._key_from_token("not_a_key") is None
+
+
+def test_keybind_refuses_a_combo_that_could_never_fire(capsys):
+    """A binding whose key did not resolve was appended with key None.
+
+    run_plugin_keybind then compared it against a real QKeyEvent key and never
+    matched, so the binding looked accepted and silently did nothing - with no
+    way for the author to tell a typo from a bug.
+    """
+    api = EasyTer._PluginAPI()
+
+    @api.keybind("Ctrl+Alt+NotAKey")
+    def _dead():
+        return None
+
+    assert api.keybinds == []
+    assert "NotAKey" in capsys.readouterr().out
+
+    @api.keybind("Ctrl+Alt+PageUp")
+    def _live():
+        return None
+
+    assert len(api.keybinds) == 1
+    assert api.keybinds[0][3] is not None
