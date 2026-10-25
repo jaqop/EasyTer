@@ -1040,6 +1040,38 @@ def restore_bidi_line(text, base_rtl=None):
     return None
 
 
+def _row_text_range(row, c0, c1, ncols):
+    """Text of columns [c0, c1) of a screen row.
+
+    Skips the continuation cell of a double-width character: its data is
+    empty, and treating that as a blank inserts a space per wide character
+    into whatever is copied.
+    """
+    chars = []
+    col = max(0, c0)
+    limit = min(c1, ncols)
+    while col < limit:
+        d = row[col].data if row[col].data else " "
+        chars.append(d)
+        if _char_width(d) == 2 and col + 1 < ncols and not row[col + 1].data:
+            col += 2
+        else:
+            col += 1
+    return "".join(chars)
+
+
+def _logical_line(visual, base_rtl):
+    """One visual row -> the logical text to copy or search.
+
+    The row arrives padded to the full width. restore_bidi_line reverses the
+    line, which moves that padding to the FRONT, where a trailing rstrip can
+    no longer remove it - so strip before reversing, not after.
+    """
+    visual = visual.rstrip()
+    fixed = restore_bidi_line(visual, base_rtl)
+    return fixed if fixed is not None else visual
+
+
 # ── terminal-wg BiDi escape sequences (freedesktop recommendation) ──
 # BDSM (ECMA-48 mode 8) declares who does the BiDi reordering:
 #   CSI 8 h  implicit — app sends LOGICAL order, terminal reorders (our default)
@@ -3245,31 +3277,17 @@ class TerminalWidget(QWidget):
                 row = self._abs_line(screen, L)
                 if self.claude_mode:
                     # in Claude mode we copy the whole line logically (reversal can't be split by columns)
-                    full = self._full_row_text(row, ncols)
-                    fixed = restore_bidi_line(full, self.backend.bidi_base_rtl)
-                    out.append((fixed if fixed is not None else full).rstrip())
+                    out.append(_logical_line(self._full_row_text(row, ncols),
+                                             self.backend.bidi_base_rtl))
                     continue
                 c0 = lo_c if L == lo_l else 0
                 c1 = hi_c if L == hi_l else ncols
-                chars = []
-                for col in range(c0, min(c1, ncols)):
-                    ch = row[col]
-                    chars.append(ch.data if ch.data else " ")
-                out.append("".join(chars).rstrip())
+                out.append(_row_text_range(row, c0, c1, ncols).rstrip())
         return "\n".join(out)
 
     def _full_row_text(self, row, ncols):
         """The whole line's text, skipping continuation cells of wide chars (emoji)."""
-        chars = []
-        col = 0
-        while col < ncols:
-            d = row[col].data if row[col].data else " "
-            chars.append(d)
-            if _char_width(d) == 2 and col + 1 < ncols and not row[col + 1].data:
-                col += 2
-            else:
-                col += 1
-        return "".join(chars)
+        return _row_text_range(row, 0, ncols, ncols)
 
     def _copy_selection(self):
         txt = self._selection_text()
@@ -3361,9 +3379,7 @@ class TerminalWidget(QWidget):
     def _line_logical_text(self, row, ncols):
         full = self._full_row_text(row, ncols)
         if self.claude_mode:
-            fixed = restore_bidi_line(full, self.backend.bidi_base_rtl)
-            if fixed is not None:
-                full = fixed
+            return _logical_line(full, self.backend.bidi_base_rtl)
         return full
 
     def _open_search(self):

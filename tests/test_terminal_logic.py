@@ -1226,3 +1226,50 @@ def test_keybind_refuses_a_combo_that_could_never_fire(capsys):
 
     assert len(api.keybinds) == 1
     assert api.keybinds[0][3] is not None
+
+
+class _FakeCell:
+    def __init__(self, data):
+        self.data = data
+
+
+def _fake_row(cells):
+    """A pyte-like row: index -> cell. "" marks a wide char's continuation cell."""
+    return {i: _FakeCell(d) for i, d in enumerate(cells)}
+
+
+def test_row_text_range_skips_the_continuation_cell_of_a_wide_char():
+    """A mouse selection added a space per wide character; select-all did not.
+
+    The column loop in _selection_text appended " " for any cell with empty
+    data, which includes the second cell of a double-width character, while
+    _full_row_text skipped it correctly. So the selection rectangle covered
+    中ABCDEF and the clipboard got 中 ABCDEF.
+    """
+    row = _fake_row(["中", "", "A", "B", "C", "D", "E", "F"])
+    assert EasyTer._row_text_range(row, 0, 8, 8) == "中ABCDEF"
+    assert EasyTer._row_text_range(row, 0, 3, 8) == "中A"
+    # an astral emoji behaves the same way
+    row = _fake_row(["\U0001F600", "", "A", "B", "C"])
+    assert EasyTer._row_text_range(row, 0, 5, 5) == "\U0001F600ABC"
+    # a genuinely blank cell is still a space
+    assert EasyTer._row_text_range(_fake_row(["a", " ", "b"]), 0, 3, 3) == "a b"
+
+
+def test_logical_line_strips_the_padding_before_reversing_it_to_the_front():
+    """Every Arabic line copied in Claude mode carried ~90 leading spaces.
+
+    _full_row_text returns all ncols, so a short line is right-padded.
+    restore_bidi_line then reverses the line, moving that padding to the FRONT,
+    where the trailing rstrip at the call site could no longer remove it.
+    """
+    visual = "رطس 1,234 ءاشنإ مت"
+    padded = visual + " " * 82
+
+    out = EasyTer._logical_line(padded, None)
+    assert not out.startswith(" "), "padding was moved to the front"
+    assert out == EasyTer._logical_line(visual, None), "padding changed the result"
+    assert out.strip() == out
+
+    # a line that needs no reversal is unchanged apart from the padding
+    assert EasyTer._logical_line("plain ascii" + " " * 40, None) == "plain ascii"
