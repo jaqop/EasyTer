@@ -992,3 +992,105 @@ def test_easyterpro_backend_releases_when_the_shell_exits_by_itself():
     backend._release()          # idempotent: the reader finally and close() both call it
     assert backend.proc is None
     assert terminated == [True]
+
+
+def test_save_settings_keeps_the_old_file_when_the_write_fails(tmp_path, monkeypatch,
+                                                               settings_snapshot):
+    """An interrupted write must not destroy the config.
+
+    save_settings truncated the real file with open(path, "w") and streamed
+    json.dump into it, so a failure part way left a half-written file that
+    load_settings then silently discarded - every theme, font and favourite
+    gone with no message. EditorWidget.save in this same file already does
+    tempfile + os.replace, and its comment explains exactly this hazard.
+    """
+    cfg = tmp_path / "c.json"
+    monkeypatch.setattr(EasyTer, "CONFIG_PATH", str(cfg))
+    EasyTer.SETTINGS["font_size"] = 21
+    EasyTer.save_settings()
+    good = cfg.read_text(encoding="utf-8")
+    assert json.loads(good)["font_size"] == 21
+
+    class _Unserializable:
+        pass
+
+    EasyTer.SETTINGS["doomed"] = _Unserializable()
+    EasyTer.save_settings()                      # fails part way through the dump
+
+    assert cfg.read_text(encoding="utf-8") == good
+    assert json.loads(cfg.read_text(encoding="utf-8"))["font_size"] == 21
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["c.json"]   # no temp left behind
+
+
+def test_saved_sizes_are_only_restored_when_they_are_integers():
+    assert EasyTer._saved_sizes_ok([100, 200]) is True
+    assert EasyTer._saved_sizes_ok(["a", "b"]) is False
+    assert EasyTer._saved_sizes_ok([100, None]) is False
+    assert EasyTer._saved_sizes_ok([True, 200]) is False
+    assert EasyTer._saved_sizes_ok("100,200") is False
+    assert EasyTer._saved_sizes_ok([]) is False
+    assert EasyTer._saved_sizes_ok(None) is False
+
+
+def test_restore_session_treats_an_unexpected_shape_as_no_session(tmp_path, monkeypatch, qapp):
+    """A session file that parses but has a shape we never wrote must not raise.
+
+    restore_session's try covered only open/json.load, so `[{"tabs": []}]` hit
+    `data.get` and `{"tabs":[{"tree":"oops"}]}` reached build_node - both
+    AttributeError, leaving a window with no tabs at all, nothing logged where
+    a GUI user can see it, and the bad file never cleared.
+    """
+    class _Tabs:
+        def setCurrentIndex(self, _i):
+            return None
+
+    class _Win:
+        def __init__(self):
+            self.tabs = _Tabs()
+            self.created = []
+
+        def new_tab(self, tree=None, name=None):
+            self.created.append((tree, name))
+
+        def _restore_sizes(self):
+            return None
+
+    session = tmp_path / "s.json"
+    monkeypatch.setattr(EasyTer, "SESSION_PATH", str(session))
+
+    for payload in ('[{"tabs": []}]', '"hello"', '42', 'null',
+                    '{"tabs": "abc"}', '{"tabs": 5}', '{"no_tabs": 1}'):
+        session.write_text(payload, encoding="utf-8")
+        win = _Win()
+        assert EasyTer.MainWindow.restore_session(win) is False, payload
+        assert win.created == [], payload
+
+    # a tab whose tree is neither absent nor a mapping is skipped, not crashed on
+    session.write_text(json.dumps({"tabs": [
+        {"name": "bad", "tree": "oops"},
+        {"name": "good", "tree": {"type": "term"}},
+    ]}), encoding="utf-8")
+    win = _Win()
+    assert EasyTer.MainWindow.restore_session(win) is True
+    assert [name for _tree, name in win.created] == ["good"]
+
+
+def test_easyterpro_config_save_keeps_the_old_file_when_the_write_fails(tmp_path, monkeypatch,
+                                                                        qapp):
+    """Config.save had the same truncate-then-stream shape as save_settings."""
+    from easyterpro import config as cfgmod
+    monkeypatch.setattr(cfgmod, "CONFIG_DIR", str(tmp_path))
+    monkeypatch.setattr(cfgmod, "CONFIG_PATH", str(tmp_path / "config.json"))
+    cfg = cfgmod.Config()
+    cfg.set("Nord", "theme")
+    good = (tmp_path / "config.json").read_text(encoding="utf-8")
+    assert json.loads(good)["theme"] == "Nord"
+
+    class _Unserializable:
+        pass
+
+    cfg._data["doomed"] = _Unserializable()
+    cfg.save()
+
+    assert (tmp_path / "config.json").read_text(encoding="utf-8") == good
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["config.json"]
