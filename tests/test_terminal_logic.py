@@ -935,3 +935,60 @@ def test_reveal_format_chars_escapes_the_line_separators_too():
     assert reveal_format_chars("a\u200bb") == "a<U+200B>b"
     assert reveal_format_chars("a\u202eb") == "a<U+202E>b"
     assert reveal_format_chars("plain.txt") == "plain.txt"
+
+
+def test_reader_carry_is_bounded_so_a_long_run_cannot_stall_the_pane():
+    """An "incomplete sequence" longer than any real one must go to pyte.
+
+    INCOMPLETE_TAIL_RE matches an arbitrarily long run of CSI parameter bytes,
+    so output ending in one was retained whole and nothing was fed or painted.
+    The carry grew linearly with the output: 32 chunks of 64 KiB retained 2 MiB
+    and fed pyte nothing. pyte parses incrementally and keeps its own parser
+    state across feed(), so handing it the excess is safe; the carry exists for
+    the scanners, not for pyte.
+    """
+    backend = EasyTer.PtyBackend.__new__(EasyTer.PtyBackend)
+
+    flood = "\x1b[" + "1" * 65536
+    fed, carry = backend._split_incomplete_tail(flood)
+    assert carry == ""
+    assert fed == flood
+
+    # a genuinely short incomplete CSI is still held back for the next read
+    fed, carry = backend._split_incomplete_tail("abc\x1b[1;2")
+    assert fed == "abc"
+    assert carry == "\x1b[1;2"
+
+    # and a chunk ending in a complete sequence carries nothing
+    fed, carry = backend._split_incomplete_tail("abc\x1b[1;2m")
+    assert fed == "abc\x1b[1;2m"
+    assert carry == ""
+
+
+def test_easyterpro_backend_releases_when_the_shell_exits_by_itself():
+    """A self-exited shell must not leave _alive True with the console held.
+
+    EasyTer.py's _release docstring documents this exact bug; the fix was never
+    carried over to easyterpro, whose reader finally only emits `exited`. The
+    result was write() still accepting input into a dead shell, and the
+    PtyProcess held for the pane's whole remaining lifetime.
+    """
+    from easyterpro.backend import PtyBackend
+    backend = PtyBackend.__new__(PtyBackend)
+    backend._alive = True
+
+    terminated = []
+
+    class _Proc:
+        def terminate(self, force=False):
+            terminated.append(force)
+
+    backend.proc = _Proc()
+    backend._release()
+    assert backend._alive is False
+    assert backend.proc is None
+    assert terminated == [True]
+
+    backend._release()          # idempotent: the reader finally and close() both call it
+    assert backend.proc is None
+    assert terminated == [True]

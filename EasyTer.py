@@ -151,6 +151,12 @@ def _char_width(d):
 KITTY_KB_RE = re.compile(r"\x1b\[[<>=?][0-9;]*u")
 # Incomplete CSI/ESC sequence at the end of a chunk (carried to the next read to avoid splitting)
 INCOMPLETE_TAIL_RE = re.compile(r"\x1b\[?[0-9;?<>=]*$")
+# Longest tail worth holding back for the next read. The regex above matches an
+# arbitrarily long run of CSI parameter bytes, so output ending in one would be
+# retained whole - growing the reader's buffer without bound while the pane
+# shows nothing. Anything past this is not a real sequence; hand it to pyte,
+# which parses incrementally and keeps its own parser state across feed().
+MAX_CARRY = 256
 # Clickable links: match http(s) URLs in the visible text (Ctrl+click to open)
 URL_RE = re.compile(r"""https?://[^\s<>"'`)\]}]+""")
 # file references in program output (compiler/pytest/grep style), optionally
@@ -1416,12 +1422,7 @@ class PtyBackend(QObject):
                     data = self._carry + data
                     data = self._scan_kitty_kb(data)  # answer/track kitty kb, strip from pyte
                     # carry any incomplete sequence at the end of the chunk to the next read
-                    m = INCOMPLETE_TAIL_RE.search(data)
-                    if m and m.group():
-                        self._carry = data[m.start():]
-                        data = data[:m.start()]
-                    else:
-                        self._carry = ""
+                    data, self._carry = self._split_incomplete_tail(data)
                     if data:
                         self._feed_with_marks(data)
                         self.data_ready.emit()
@@ -1493,6 +1494,19 @@ class PtyBackend(QObject):
             self.command_ended.emit(code)
         if cmd_dirty:
             self.cmd_changed.emit()
+
+    def _split_incomplete_tail(self, data):
+        """Split off a trailing partial escape sequence to prepend next read.
+
+        Returns ``(feed_now, carry)``. A tail longer than MAX_CARRY is not a
+        real sequence - the regex matches an unbounded run of parameter bytes -
+        so it is fed rather than retained, which is what keeps untrusted output
+        from growing this buffer without limit while the pane stays blank.
+        """
+        m = INCOMPLETE_TAIL_RE.search(data)
+        if m and m.group() and len(data) - m.start() <= MAX_CARRY:
+            return data[:m.start()], data[m.start():]
+        return data, ""
 
     def _scan_kitty_kb(self, data):
         """Kitty keyboard protocol negotiation (progressive enhancement).
