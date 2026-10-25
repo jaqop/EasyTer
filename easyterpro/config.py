@@ -7,6 +7,7 @@
 import copy
 import json
 import os
+import tempfile
 
 from PySide6.QtCore import QObject, Signal
 
@@ -72,8 +73,20 @@ class Config(QObject):
     def save(self):
         try:
             os.makedirs(CONFIG_DIR, exist_ok=True)
-            with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-                json.dump(self._data, f, ensure_ascii=False, indent=2)
+            # ملفّ مؤقّت ثمّ استبدال ذرّيّ: اقتطاع الملفّ الأصليّ بـopen(...,"w")
+            # ثمّ الكتابة تدريجيًّا يترك ملفًّا نصفَ مكتوبٍ إن انقطعت الكتابة،
+            # فيُهمله التحميل صامتًا وتضيع إعدادات المستخدم كلّها.
+            fd, tmp = tempfile.mkstemp(dir=CONFIG_DIR, prefix=".easyterpro-", suffix=".tmp")
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    json.dump(self._data, f, ensure_ascii=False, indent=2)
+                os.replace(tmp, CONFIG_PATH)
+            except Exception:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+                raise
         except Exception:
             pass
 

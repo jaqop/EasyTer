@@ -719,10 +719,32 @@ def load_settings():
         SETTINGS[key] = value
 
 
+def _atomic_write_json(path, obj):
+    """Write JSON to a sibling temp file, then atomically replace. Raises on failure.
+
+    Truncating the real file with open(path, "w") and streaming into it leaves a
+    half-written file when the write fails part way (disk full, power loss, a
+    value that will not serialize) - and the loaders then discard it silently,
+    taking every setting with it. Same pattern as EditorWidget.save.
+    dirname is lexical; abspath would call GetFullPathName on Windows.
+    """
+    d = ntpath.dirname(path) or "."
+    fd, tmp = tempfile.mkstemp(dir=d, prefix=".easyter-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(obj, fh, ensure_ascii=False, indent=2)
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def save_settings():
     try:
-        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-            json.dump(SETTINGS, f, ensure_ascii=False, indent=2)
+        _atomic_write_json(CONFIG_PATH, SETTINGS)
     except Exception:
         pass
 
@@ -5006,9 +5028,28 @@ def serialize_node(widget):
     return None
 
 
-def build_node(node):
-    """Builds the pane tree from a saved structure."""
-    if not node:
+def _saved_sizes_ok(sizes):
+    """Whether saved splitter sizes can be handed to QSplitter.setSizes.
+
+    The session file is hand-editable, and setSizes raises on anything that is
+    not a list of ints - bool is excluded because it is an int subclass.
+    """
+    return (isinstance(sizes, list) and bool(sizes)
+            and all(isinstance(v, int) and not isinstance(v, bool) for v in sizes))
+
+
+# Deeper than any real pane tree; a hand-edited file must not exhaust the stack.
+_MAX_TREE_DEPTH = 32
+
+
+def build_node(node, depth=0):
+    """Builds the pane tree from a saved structure.
+
+    A node that is not a mapping, or nesting past _MAX_TREE_DEPTH, falls back
+    to a plain terminal: the file is whatever the last run wrote, or whatever
+    the user hand-edited, so a shape we never wrote must not raise at startup.
+    """
+    if not node or not isinstance(node, dict) or depth > _MAX_TREE_DEPTH:
         return TerminalWidget()
     if node.get("type") == "term":
         return TerminalWidget(command=restore_command(node.get("command")))
@@ -5020,10 +5061,11 @@ def build_node(node):
     split = QSplitter(orient)
     split.setHandleWidth(6)
     split.setChildrenCollapsible(False)
-    for ch in node.get("children", []):
-        split.addWidget(build_node(ch))
+    children = node.get("children")
+    for ch in children if isinstance(children, list) else []:
+        split.addWidget(build_node(ch, depth + 1))
     sizes = node.get("sizes")
-    if sizes:
+    if _saved_sizes_ok(sizes):
         split._saved_sizes = sizes
     return split
 
@@ -5427,8 +5469,7 @@ class MainWindow(QWidget):
                     "tree": serialize_node(s.root_widget()),
                 })
         try:
-            with open(SESSION_PATH, "w", encoding="utf-8") as f:
-                json.dump({"tabs": tabs_data}, f, ensure_ascii=False, indent=2)
+            _atomic_write_json(SESSION_PATH, {"tabs": tabs_data})
         except Exception:
             pass
 
@@ -5438,11 +5479,25 @@ class MainWindow(QWidget):
                 data = json.load(f)
         except Exception:
             return False
-        tabs = data.get("tabs", [])
-        if not tabs:
+        # The file is whatever the last run wrote, or whatever the user edited.
+        # A shape we never wrote means "no session" - not a crash that leaves
+        # the window with no tabs and nothing on screen to explain why.
+        if not isinstance(data, dict):
             return False
+        tabs = data.get("tabs")
+        if not isinstance(tabs, list) or not tabs:
+            return False
+        opened = 0
         for t in tabs:
-            self.new_tab(tree=t.get("tree"), name=t.get("name"))
+            if not isinstance(t, dict):
+                continue
+            tree = t.get("tree")
+            if tree is not None and not isinstance(tree, dict):
+                continue
+            self.new_tab(tree=tree, name=t.get("name"))
+            opened += 1
+        if not opened:
+            return False
         self.tabs.setCurrentIndex(0)
         QTimer.singleShot(0, self._restore_sizes)
         return True
@@ -5450,7 +5505,7 @@ class MainWindow(QWidget):
     def _restore_sizes(self):
         for split in self.findChildren(QSplitter):
             sz = getattr(split, "_saved_sizes", None)
-            if sz:
+            if _saved_sizes_ok(sz):
                 split.setSizes(sz)
 
     def close_tab(self, index):
