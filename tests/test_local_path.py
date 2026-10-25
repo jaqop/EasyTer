@@ -648,7 +648,7 @@ def test_blocked_drive_never_reaches_the_filesystem(kind, monkeypatch):
         localpath.clear_drive_type_cache()
 
 
-def test_drive_type_is_cached_per_letter(monkeypatch):
+def test_drive_type_is_fresh_before_filesystem_use(monkeypatch):
     from easyterpro import localpath
 
     localpath.clear_drive_type_cache()
@@ -662,11 +662,24 @@ def test_drive_type_is_cached_per_letter(monkeypatch):
     try:
         assert localpath.local_drive_ok(r"C:\a") is True
         assert localpath.local_drive_ok(r"c:\b") is True
-        assert localpath.local_drive_ok(r"D:\a") is True
-        assert calls == ["C:\\", "D:\\"]
+        assert calls == ["C:\\", "C:\\"]
         assert all(isinstance(root, str) for root in calls)
+        # the fresh answer is published for hover, and hover does not query
         assert localpath.cached_drive_ok(r"C:\z") is True
         assert localpath.hover_file_reference(r"Z:\share\a.txt") is True
+        assert calls == ["C:\\", "C:\\"]
+
+        def remote(root):
+            calls.append(root)
+            return 4
+
+        monkeypatch.setattr(localpath, "_query_drive_type", remote)
+        assert localpath.local_drive_ok(r"C:\a") is False
+        assert calls[-1] == "C:\\"
+        assert localpath.cached_drive_ok(r"C:\a") is False
+        before = len(calls)
+        assert localpath.hover_file_reference(r"C:\a") is False
+        assert len(calls) == before
     finally:
         localpath.clear_drive_type_cache()
 
@@ -840,6 +853,98 @@ def test_gated_save_keeps_the_arabic_error(qapp):
         assert editor.header.text() != "  ✎ " + i18n.t("editor.untitled")
     finally:
         i18n.set_language("en")
+
+
+def test_stale_drive_cache_does_not_authorize_filesystem(monkeypatch):
+    import EasyTer
+    from easyterpro import localpath
+
+    localpath.clear_drive_type_cache()
+    monkeypatch.setattr(localpath, "_query_drive_type", lambda _root: 3)
+    assert localpath.local_drive_ok(r"C:\a") is True
+    assert localpath.cached_drive_ok(r"C:\a") is True
+    monkeypatch.setattr(localpath, "_query_drive_type", lambda _root: 4)
+    calls = []
+    monkeypatch.setattr(os.path, "isfile", lambda path: calls.append(("isfile", path)) or True)
+    monkeypatch.setattr(os.path, "isdir", lambda path: calls.append(("isdir", path)) or True)
+    try:
+        assert EasyTer.existing_local_file(r"C:\a\f.txt") is False
+        assert EasyTer.existing_local_dir(r"C:\a") is None
+        assert calls == []
+    finally:
+        localpath.clear_drive_type_cache()
+
+
+def test_hand_cursor_skips_a_missing_file(monkeypatch):
+    import EasyTer
+    from easyterpro import localpath
+
+    localpath.clear_drive_type_cache()
+    probes = []
+
+    def isfile(path):
+        probes.append(path)
+        return False
+
+    monkeypatch.setattr(localpath, "_query_drive_type", lambda _root: 3)
+    monkeypatch.setattr(os.path, "isfile", isfile)
+    widget = EasyTer.TerminalWidget.__new__(EasyTer.TerminalWidget)
+    widget.sel_anchor = None
+    widget._hover_exists = {}
+    widget._hover_exists_path = None
+    widget._hover_pos = object()
+    widget._url_at = lambda _pos: None
+    path = r"C:\missing\nope.txt"
+    widget._file_candidate = lambda _pos: (path, None)
+
+    class Timer:
+        def __init__(self):
+            self.started = 0
+
+        def isActive(self):
+            return False
+
+        def start(self, _ms):
+            self.started += 1
+
+    widget._hover_exists_timer = Timer()
+    cursors = []
+    widget.setCursor = lambda cursor: cursors.append(cursor)
+    widget.unsetCursor = lambda: cursors.append("unset")
+
+    class Event:
+        def buttons(self):
+            return EasyTer.Qt.NoButton
+
+        def modifiers(self):
+            return EasyTer.Qt.ControlModifier
+
+        def position(self):
+            return widget._hover_pos
+
+    try:
+        widget.mouseMoveEvent(Event())
+        assert probes == []
+        assert widget._hover_exists_timer.started == 1
+        assert cursors[-1] == "unset"
+        widget._refresh_hover_exists()
+        assert probes == [path]
+        widget.mouseMoveEvent(Event())
+        assert probes == [path]
+        assert widget._hover_file(widget._hover_pos) is False
+        assert cursors[-1] == "unset"
+
+        probes.clear()
+        widget._hover_exists.clear()
+        monkeypatch.setattr(os.path, "isfile", lambda _path: probes.append("hit") or True)
+        widget._hover_exists_path = path
+        widget._refresh_hover_exists()
+        assert probes == ["hit"]
+        widget.mouseMoveEvent(Event())
+        assert probes == ["hit"]
+        assert cursors[-1] == EasyTer.Qt.PointingHandCursor
+    finally:
+        localpath.clear_drive_type_cache()
 
 
 def test_accepted_path_stays_on_wide_apis(monkeypatch):

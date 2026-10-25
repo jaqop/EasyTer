@@ -1836,6 +1836,12 @@ class TerminalWidget(QWidget):
         self._edit_confirm_open = False
         self._edit_confirm_not_before = 0.0
         self._osc52_confirm_open = False
+        self._hover_exists = {}
+        self._hover_exists_path = None
+        self._hover_pos = None
+        self._hover_exists_timer = QTimer(self)
+        self._hover_exists_timer.setSingleShot(True)
+        self._hover_exists_timer.timeout.connect(self._refresh_hover_exists)
         self._start_backend(self.command)
 
         self.resize(int(self.cols * self.cw), self.rows * self.ch)
@@ -2981,9 +2987,65 @@ class TerminalWidget(QWidget):
         return None
 
     def _hover_file(self, pos):
-        """True when Ctrl+hover may show the hand cursor. No filesystem call."""
+        """True when Ctrl+hover may show the hand cursor.
+
+        The existence answer comes from ``_hover_exists``, filled by
+        ``_refresh_hover_exists`` off the mouse-move path. A path that has
+        not been checked, or that does not exist, does not get the hand.
+        This method does not call ``isfile`` or ``GetDriveTypeW``.
+        """
         hit = self._file_candidate(pos)
-        return bool(hit) and hover_file_reference(hit[0])
+        if not hit or not hover_file_reference(hit[0]):
+            return False
+        path = hit[0]
+        cache = getattr(self, "_hover_exists", None)
+        if isinstance(cache, dict) and path in cache:
+            return bool(cache[path])
+        self._schedule_hover_exists(path)
+        return False
+
+    def _schedule_hover_exists(self, path):
+        """Debounce one existence check. No filesystem call here."""
+        cache = getattr(self, "_hover_exists", None)
+        if isinstance(cache, dict) and path in cache:
+            return
+        timer = getattr(self, "_hover_exists_timer", None)
+        if timer is None:
+            return
+        self._hover_exists_path = path
+        timer.start(50)
+
+    def _refresh_hover_exists(self):
+        """Stat the path the pointer rested on. Not called from mouse move."""
+        path = getattr(self, "_hover_exists_path", None)
+        if not isinstance(path, str) or not path:
+            return
+        cache = getattr(self, "_hover_exists", None)
+        if not isinstance(cache, dict):
+            cache = {}
+            self._hover_exists = cache
+        if path not in cache:
+            if cached_drive_ok(path) is False:
+                found = False
+            else:
+                try:
+                    found = bool(existing_local_file(path))
+                except Exception:
+                    found = False
+            if len(cache) > 64:
+                cache.clear()
+            cache[path] = found
+        self._sync_hover_cursor()
+
+    def _sync_hover_cursor(self):
+        pos = getattr(self, "_hover_pos", None)
+        if pos is None or QApplication.instance() is None:
+            return
+        if (QApplication.keyboardModifiers() & Qt.ControlModifier) and (
+                self._url_at(pos) or self._hover_file(pos)):
+            self.setCursor(Qt.PointingHandCursor)
+        else:
+            self.unsetCursor()
 
     def _open_in_editor(self, path, line=None):
         """Open the file in this session's editor pane (Ctrl+click a path).
@@ -3025,6 +3087,7 @@ class TerminalWidget(QWidget):
             self.update()
 
     def mouseMoveEvent(self, event):
+        self._hover_pos = event.position()
         if event.buttons() & Qt.LeftButton and self.sel_anchor is not None:
             self.sel_point = self._pos_to_cell(event.position())
             self.update()
