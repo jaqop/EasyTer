@@ -870,3 +870,52 @@ def test_profile_theme_line_is_single_quoted(tmp_path, monkeypatch):
     assert "\u2019\u2019" in quoted
     assert "$(PWNED)" in quoted
     assert posh.current() == "kali"
+
+
+def test_easyterpro_deep_merge_copies_nested_dicts_the_override_never_mentions():
+    """A sub-dict absent from the override must be a copy, not the base's own object.
+
+    Config.load merges the user's file over DEFAULTS. If an untouched sub-dict is
+    shared, a later Config.set writes straight into DEFAULTS, and the corrupt-file
+    fallback then "restores" the user's previous value instead of the default.
+    """
+    from easyterpro.config import _deep_merge
+    base = {"cursor": {"style": "block", "blink": True}}
+    merged = _deep_merge(base, {"theme": "Nord"})
+    assert merged["cursor"] == {"style": "block", "blink": True}
+    assert merged["cursor"] is not base["cursor"]
+    merged["cursor"]["style"] = "beam"
+    assert base["cursor"]["style"] == "block"
+
+
+def test_easyterpro_config_set_does_not_mutate_the_defaults(tmp_path, monkeypatch, qapp):
+    import copy
+    from easyterpro import config as cfgmod
+    monkeypatch.setattr(cfgmod, "CONFIG_DIR", str(tmp_path))
+    monkeypatch.setattr(cfgmod, "CONFIG_PATH", str(tmp_path / "config.json"))
+    (tmp_path / "config.json").write_text(json.dumps({"theme": "Nord"}), encoding="utf-8")
+    pristine = copy.deepcopy(cfgmod.DEFAULTS)
+
+    cfg = cfgmod.Config()
+    cfg.set("beam", "cursor", "style")
+
+    assert cfgmod.DEFAULTS == pristine
+    assert cfg.get("cursor", "style") == "beam"
+
+
+def test_easyterpro_config_set_replaces_a_scalar_standing_where_a_section_belongs(
+        tmp_path, monkeypatch, qapp):
+    """A hand-edited scalar (`"plugins": "none"`) must not make set() raise.
+
+    Both two-key call sites are Qt slots, so the TypeError escaped into the event
+    loop and the setting silently never persisted.
+    """
+    from easyterpro import config as cfgmod
+    monkeypatch.setattr(cfgmod, "CONFIG_DIR", str(tmp_path))
+    monkeypatch.setattr(cfgmod, "CONFIG_PATH", str(tmp_path / "config.json"))
+    (tmp_path / "config.json").write_text(json.dumps({"plugins": "none"}), encoding="utf-8")
+
+    cfg = cfgmod.Config()
+    cfg.set(["sample_overlay"], "plugins", "disabled")
+
+    assert cfg.get("plugins", "disabled") == ["sample_overlay"]

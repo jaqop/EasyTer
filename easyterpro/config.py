@@ -4,6 +4,7 @@
 مستوحى من ConfigProxy في Tabby، مبسَّط: ملفّ واحد قابل للتحرير، نسخة مفردة مشتركة.
 """
 
+import copy
 import json
 import os
 
@@ -36,12 +37,14 @@ DEFAULTS = {
 
 
 def _deep_merge(base, override):
-    out = dict(base)
+    # نسخة عميقة لا سطحيّة: قيمةٌ متداخلة لا يذكرها ملفّ المستخدم كانت تبقى نفس
+    # كائن DEFAULTS، فيكتب set() داخل الافتراضيّات ويفقد مسارُ الاسترداد معناه.
+    out = copy.deepcopy(base) if isinstance(base, dict) else {}
     for k, v in (override or {}).items():
         if isinstance(v, dict) and isinstance(out.get(k), dict):
             out[k] = _deep_merge(out[k], v)
         else:
-            out[k] = v
+            out[k] = copy.deepcopy(v)
     return out
 
 
@@ -86,7 +89,11 @@ class Config(QObject):
     def set(self, value, *keys):
         node = self._data
         for k in keys[:-1]:
-            node = node.setdefault(k, {})
+            child = node.get(k)
+            if not isinstance(child, dict):   # قيمة مفردة مكان قسم: تُستبدَل
+                child = {}
+                node[k] = child
+            node = child
         node[keys[-1]] = value
         self.save()
         self.changed.emit()
