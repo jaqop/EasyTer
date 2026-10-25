@@ -926,10 +926,18 @@ def cmd_is_claude(running_cmd):
     first = _prog(toks[0])
     if first == "claude":
         return True
-    # a runner launching claude (npx claude, uvx claude, ...)
+    # a runner launching claude (npx claude, uvx claude, ...). Only the program
+    # the runner actually launches counts: skip option flags and the exec/run
+    # subcommand, then THAT token has to be claude. Scanning the whole argument
+    # list instead would match `uv run less claude` and `npm install claude`,
+    # where claude is an argument to less/npm and the output is logical-order.
     runners = {"&", "npx", "npm", "pnpm", "bun", "node", "py", "python", "python3", "uv", "uvx"}
-    if first in runners and any(_prog(t) == "claude" for t in toks[1:]):
-        return True
+    if first in runners:
+        for tok in toks[1:]:
+            bare = tok.strip("\"'")
+            if bare.startswith("-") or bare.lower() in ("run", "exec", "x"):
+                continue
+            return _prog(tok) == "claude"
     return False
 
 
