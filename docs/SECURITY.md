@@ -67,14 +67,18 @@ at the system drive root instead of that share.
   has its line suffix removed and its `/` converted to `\` before it is
   joined with the shell cwd. `~/x.py` is expanded against the home directory.
   The joined path is gated, and only then passed to `isfile`. Moving the
-  mouse with Ctrl held does not call `isfile` or `GetDriveTypeW`; the hand
-  cursor uses the lexical result only. A drive letter already known to be
-  remote, missing, or unknown is not hoverable.
-- **Drive type.** After the gate and before `isdir`, `isfile`, or `open` on
-  a terminal-derived path, `GetDriveTypeW` must report a local drive.
-  `DRIVE_REMOTE`, `DRIVE_NO_ROOT_DIR`, and `DRIVE_UNKNOWN` are rejected. The
-  result is cached per drive letter. The root passed to `GetDriveTypeW` is a
-  Python `str` (`c_wchar_p`), not an ANSI string.
+  mouse with Ctrl held does not call `isfile` or `GetDriveTypeW`. The hand
+  cursor is shown only when a check run off that path has already found that
+  the file exists. A missing file does not get the hand. A drive letter
+  already known to be remote, missing, or unknown is not hoverable.
+- **Drive type.** After the gate and immediately before `isdir`, `isfile`,
+  or `open` on a terminal-derived path, `GetDriveTypeW` is called fresh and
+  must report a local drive. `DRIVE_REMOTE`, `DRIVE_NO_ROOT_DIR`, and
+  `DRIVE_UNKNOWN` are rejected. A per-letter cache is kept for hover hints
+  only and is not consulted for that decision, so a letter that is later
+  mapped to a share cannot be touched on the strength of an old answer. The
+  root passed to `GetDriveTypeW` is a Python `str` (`c_wchar_p`), not an
+  ANSI string.
 - **Start directory** for new tabs and splits (`resolve_start_dir`), and the
   folder argument on the command line (`start_dir_from_argv`). Relative
   command-line arguments are joined lexically with the process cwd.
