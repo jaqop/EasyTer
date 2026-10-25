@@ -1094,3 +1094,64 @@ def test_easyterpro_config_save_keeps_the_old_file_when_the_write_fails(tmp_path
 
     assert (tmp_path / "config.json").read_text(encoding="utf-8") == good
     assert sorted(p.name for p in tmp_path.iterdir()) == ["config.json"]
+def test_load_settings_rejects_values_whose_type_cannot_work(tmp_path, monkeypatch,
+                                                             settings_snapshot):
+    """A wrong-typed value used to reach Qt and kill startup before any window.
+
+    SETTINGS.update(json.load(f)) checked only that the file was a mapping, so
+    the damage was per key: {"palette": [...]} raised TypeError inside
+    apply_palette, which main() calls before the window exists. The file was
+    never rewritten either, so every later launch failed the same way - and
+    under pythonw there is no console to print the traceback to.
+    """
+    bad = tmp_path / "c.json"
+    bad.write_text(json.dumps({
+        "palette": ["#ff0000"],          # a dict of ANSI names, or None
+        "bg": [1, 2, 3],                 # str
+        "opacity": "0.9",                # number
+        "font_size": "13",               # int
+        "scrollback": "lots",            # int
+        "favorite_themes": "Nord",       # list
+        "shell_integration": "yes",      # bool
+        "language": "ar",                # valid: must survive
+        "font_size_unknown_key": 1,      # unknown: kept, as before
+    }), encoding="utf-8")
+    monkeypatch.setattr(EasyTer, "CONFIG_PATH", str(bad))
+    EasyTer.load_settings()
+
+    assert EasyTer.SETTINGS["palette"] is None
+    assert EasyTer.SETTINGS["bg"] == "#0d1117"
+    assert EasyTer.SETTINGS["opacity"] == 1.0
+    assert EasyTer.SETTINGS["font_size"] == 13
+    assert EasyTer.SETTINGS["scrollback"] == 10000
+    assert EasyTer.SETTINGS["favorite_themes"] == []
+    assert EasyTer.SETTINGS["shell_integration"] is True
+    assert EasyTer.SETTINGS["language"] == "ar"
+    assert EasyTer.SETTINGS["font_size_unknown_key"] == 1
+
+
+def test_load_settings_keeps_a_palette_dict_and_a_null_palette(tmp_path, monkeypatch,
+                                                               settings_snapshot):
+    good = tmp_path / "c.json"
+    good.write_text(json.dumps({"palette": {"red": "#ff0000"}, "opacity": 1}),
+                    encoding="utf-8")
+    monkeypatch.setattr(EasyTer, "CONFIG_PATH", str(good))
+    EasyTer.load_settings()
+    assert EasyTer.SETTINGS["palette"] == {"red": "#ff0000"}
+    assert EasyTer.SETTINGS["opacity"] == 1       # int is fine where a float is expected
+
+    null = tmp_path / "n.json"
+    null.write_text(json.dumps({"palette": None}), encoding="utf-8")
+    monkeypatch.setattr(EasyTer, "CONFIG_PATH", str(null))
+    EasyTer.load_settings()
+    assert EasyTer.SETTINGS["palette"] is None
+
+
+def test_a_corrupt_config_no_longer_stops_startup(tmp_path, monkeypatch, settings_snapshot):
+    """apply_base_colors runs before the window exists; it must not raise."""
+    bad = tmp_path / "c.json"
+    bad.write_text(json.dumps({"palette": ["#ff0000"], "bg": [1, 2, 3], "fg": 7}),
+                   encoding="utf-8")
+    monkeypatch.setattr(EasyTer, "CONFIG_PATH", str(bad))
+    EasyTer.load_settings()
+    EasyTer.apply_base_colors()          # raised TypeError before the fix
