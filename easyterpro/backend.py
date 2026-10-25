@@ -60,6 +60,7 @@ class PtyBackend(QObject):
         except Exception:
             pass
         finally:
+            self._release()
             self.exited.emit()
 
     def _scan_alt(self, data):
@@ -101,9 +102,17 @@ class PtyBackend(QObject):
         except Exception:
             pass
 
-    def close(self):
+    def _release(self):
+        """يُعلن موت الخلفيّة ويحرّر مقابض الطرفيّة الزائفة. غير ضارّ بالتكرار:
+        يُنادى من نهاية القارئ (صدفةٌ خرجت وحدها) ومن close (أغلق المستخدم اللوح)،
+        فلا تبقى _alive صحيحةً والمقابض معلّقةً حتّى يُجمَع الكائن."""
         self._alive = False
-        try:
-            self.proc.terminate(force=True)
-        except Exception:
-            pass
+        proc, self.proc = self.proc, None
+        if proc is not None:
+            try:
+                proc.terminate(force=True)
+            except Exception:
+                pass
+
+    def close(self):
+        self._release()

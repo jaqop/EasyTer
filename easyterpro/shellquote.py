@@ -173,15 +173,18 @@ def sanitize_dropped_text(text) -> Optional[str]:
 
 
 def reveal_format_chars(text) -> str:
-    """Replace Cf characters with ``<U+XXXX>`` for a confirm card.
+    """Replace Cf, Zl and Zp characters with ``<U+XXXX>`` for a confirm card.
 
     Bidi and other format characters would otherwise reorder the path the
-    user is asked to approve. The bytes written to the shell are unchanged.
+    user is asked to approve. U+2028 and U+2029 are Zl/Zp rather than Cf, and
+    Qt lays both out as real line breaks even under ``Qt.PlainText``, so they
+    can split the path and leave room for forged dialog copy beneath it.
+    The bytes written to the shell are unchanged.
     """
     if not isinstance(text, str):
         return ""
     return "".join(
-        "<U+%04X>" % ord(ch) if unicodedata.category(ch) == "Cf" else ch
+        "<U+%04X>" % ord(ch) if unicodedata.category(ch) in ("Cf", "Zl", "Zp") else ch
         for ch in text
     )
 

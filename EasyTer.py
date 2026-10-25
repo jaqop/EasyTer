@@ -151,6 +151,12 @@ def _char_width(d):
 KITTY_KB_RE = re.compile(r"\x1b\[[<>=?][0-9;]*u")
 # Incomplete CSI/ESC sequence at the end of a chunk (carried to the next read to avoid splitting)
 INCOMPLETE_TAIL_RE = re.compile(r"\x1b\[?[0-9;?<>=]*$")
+# Longest tail worth holding back for the next read. The regex above matches an
+# arbitrarily long run of CSI parameter bytes, so output ending in one would be
+# retained whole - growing the reader's buffer without bound while the pane
+# shows nothing. Anything past this is not a real sequence; hand it to pyte,
+# which parses incrementally and keeps its own parser state across feed().
+MAX_CARRY = 256
 # Clickable links: match http(s) URLs in the visible text (Ctrl+click to open)
 URL_RE = re.compile(r"""https?://[^\s<>"'`)\]}]+""")
 # file references in program output (compiler/pytest/grep style), optionally
@@ -516,7 +522,10 @@ def confirm_local_open(parent, path):
     box.setTextFormat(Qt.PlainText)
     box.setIcon(QMessageBox.Question)
     box.setWindowTitle(i18n.t("edit.confirm_title"))
-    box.setText(path)
+    # The whole text of this dialog comes from terminal output, so show format
+    # characters as <U+XXXX> the way the drop card does - otherwise a
+    # zero-width or line-separator character hides part of what is approved.
+    box.setText(reveal_format_chars(path))
     box.setInformativeText(i18n.t("edit.confirm_body"))
     box.setStandardButtons(QMessageBox.Ok | QMessageBox.Cancel)
     box.setDefaultButton(QMessageBox.Cancel)
@@ -926,10 +935,18 @@ def cmd_is_claude(running_cmd):
     first = _prog(toks[0])
     if first == "claude":
         return True
-    # a runner launching claude (npx claude, uvx claude, ...)
+    # a runner launching claude (npx claude, uvx claude, ...). Only the program
+    # the runner actually launches counts: skip option flags and the exec/run
+    # subcommand, then THAT token has to be claude. Scanning the whole argument
+    # list instead would match `uv run less claude` and `npm install claude`,
+    # where claude is an argument to less/npm and the output is logical-order.
     runners = {"&", "npx", "npm", "pnpm", "bun", "node", "py", "python", "python3", "uv", "uvx"}
-    if first in runners and any(_prog(t) == "claude" for t in toks[1:]):
-        return True
+    if first in runners:
+        for tok in toks[1:]:
+            bare = tok.strip("\"'")
+            if bare.startswith("-") or bare.lower() in ("run", "exec", "x"):
+                continue
+            return _prog(tok) == "claude"
     return False
 
 
@@ -1405,12 +1422,7 @@ class PtyBackend(QObject):
                     data = self._carry + data
                     data = self._scan_kitty_kb(data)  # answer/track kitty kb, strip from pyte
                     # carry any incomplete sequence at the end of the chunk to the next read
-                    m = INCOMPLETE_TAIL_RE.search(data)
-                    if m and m.group():
-                        self._carry = data[m.start():]
-                        data = data[:m.start()]
-                    else:
-                        self._carry = ""
+                    data, self._carry = self._split_incomplete_tail(data)
                     if data:
                         self._feed_with_marks(data)
                         self.data_ready.emit()
@@ -1482,6 +1494,19 @@ class PtyBackend(QObject):
             self.command_ended.emit(code)
         if cmd_dirty:
             self.cmd_changed.emit()
+
+    def _split_incomplete_tail(self, data):
+        """Split off a trailing partial escape sequence to prepend next read.
+
+        Returns ``(feed_now, carry)``. A tail longer than MAX_CARRY is not a
+        real sequence - the regex matches an unbounded run of parameter bytes -
+        so it is fed rather than retained, which is what keeps untrusted output
+        from growing this buffer without limit while the pane stays blank.
+        """
+        m = INCOMPLETE_TAIL_RE.search(data)
+        if m and m.group() and len(data) - m.start() <= MAX_CARRY:
+            return data[:m.start()], data[m.start():]
+        return data, ""
 
     def _scan_kitty_kb(self, data):
         """Kitty keyboard protocol negotiation (progressive enhancement).

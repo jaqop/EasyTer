@@ -55,6 +55,36 @@ class CmdIsClaudeTest(unittest.TestCase):
         ]:
             self.assertFalse(cmd_is_claude(cmd), f"must NOT be Claude: {cmd!r}")
 
+    def test_a_runner_does_not_make_an_argument_the_program(self):
+        # The runner allowance exists so `npx claude` matches. It must not match
+        # `claude` sitting in some OTHER program's argument list: those programs
+        # emit LOGICAL-order Arabic, and reversing them is the bug this file
+        # exists to prevent. `less claude` is already pinned above; prefixing a
+        # runner must not change the answer.
+        for cmd in [
+            "uv run less claude",
+            "npm install claude",
+            "npm run build claude",
+            "py -m pytest claude",
+            "python -m http.server claude",
+            "node server.js claude",
+            "bun test claude",
+            "pnpm exec vite claude",
+        ]:
+            self.assertFalse(cmd_is_claude(cmd), f"must NOT be Claude: {cmd!r}")
+
+    def test_runner_invocations_of_claude_still_match(self):
+        for cmd in [
+            "npx claude",
+            "uvx claude",
+            "uv run claude",
+            "npm exec claude",
+            "bun claude",
+            "py -m claude",
+            "python3 -u claude",
+        ]:
+            self.assertTrue(cmd_is_claude(cmd), f"expected Claude: {cmd!r}")
+
     def test_idle_prompt_is_not_claude(self):
         for cmd in ["", "   ", None]:
             self.assertFalse(cmd_is_claude(cmd), f"must NOT be Claude: {cmd!r}")

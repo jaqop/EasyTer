@@ -106,7 +106,9 @@ class PluginAPI:
         self._paint.append(callback)
 
     def add_theme(self, name, spec):
-        """يضيف ثيمًا ‎{bg, fg, ansi{...}}‎. يرمي ValueError إن كان المواصفة فاسدة."""
+        """يضيف ثيمًا ‎{bg, fg, ansi{...}}‎. يرمي ValueError إن فسد الاسم أو المواصفة."""
+        if not isinstance(name, str) or not name:
+            raise ValueError("theme name must be a non-empty str")
         _validate_theme(spec)
         self._themes.append((name, spec))
 
@@ -228,12 +230,12 @@ def load(window=None, *, names=None, importer=None, disabled=None, registry=regi
         api = PluginAPI(name, registry, window)
         try:
             register(api)
+            api._commit()   # داخل الـtry أيضًا: تركيب الثيم (استيراد render) قد يفشل
         except Exception as exc:
             registry.failed.append((name, exc))
             _log(f"register failed: {name}\n" + traceback.format_exc())
             continue  # المخازن المؤقّتة تُهمَل → تراجع نظيف
 
-        api._commit()
         registry.loaded.append(name)
 
     return registry

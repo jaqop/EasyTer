@@ -870,3 +870,125 @@ def test_profile_theme_line_is_single_quoted(tmp_path, monkeypatch):
     assert "\u2019\u2019" in quoted
     assert "$(PWNED)" in quoted
     assert posh.current() == "kali"
+
+
+def test_easyterpro_deep_merge_copies_nested_dicts_the_override_never_mentions():
+    """A sub-dict absent from the override must be a copy, not the base's own object.
+
+    Config.load merges the user's file over DEFAULTS. If an untouched sub-dict is
+    shared, a later Config.set writes straight into DEFAULTS, and the corrupt-file
+    fallback then "restores" the user's previous value instead of the default.
+    """
+    from easyterpro.config import _deep_merge
+    base = {"cursor": {"style": "block", "blink": True}}
+    merged = _deep_merge(base, {"theme": "Nord"})
+    assert merged["cursor"] == {"style": "block", "blink": True}
+    assert merged["cursor"] is not base["cursor"]
+    merged["cursor"]["style"] = "beam"
+    assert base["cursor"]["style"] == "block"
+
+
+def test_easyterpro_config_set_does_not_mutate_the_defaults(tmp_path, monkeypatch, qapp):
+    import copy
+    from easyterpro import config as cfgmod
+    monkeypatch.setattr(cfgmod, "CONFIG_DIR", str(tmp_path))
+    monkeypatch.setattr(cfgmod, "CONFIG_PATH", str(tmp_path / "config.json"))
+    (tmp_path / "config.json").write_text(json.dumps({"theme": "Nord"}), encoding="utf-8")
+    pristine = copy.deepcopy(cfgmod.DEFAULTS)
+
+    cfg = cfgmod.Config()
+    cfg.set("beam", "cursor", "style")
+
+    assert cfgmod.DEFAULTS == pristine
+    assert cfg.get("cursor", "style") == "beam"
+
+
+def test_easyterpro_config_set_replaces_a_scalar_standing_where_a_section_belongs(
+        tmp_path, monkeypatch, qapp):
+    """A hand-edited scalar (`"plugins": "none"`) must not make set() raise.
+
+    Both two-key call sites are Qt slots, so the TypeError escaped into the event
+    loop and the setting silently never persisted.
+    """
+    from easyterpro import config as cfgmod
+    monkeypatch.setattr(cfgmod, "CONFIG_DIR", str(tmp_path))
+    monkeypatch.setattr(cfgmod, "CONFIG_PATH", str(tmp_path / "config.json"))
+    (tmp_path / "config.json").write_text(json.dumps({"plugins": "none"}), encoding="utf-8")
+
+    cfg = cfgmod.Config()
+    cfg.set(["sample_overlay"], "plugins", "disabled")
+
+    assert cfg.get("plugins", "disabled") == ["sample_overlay"]
+
+
+def test_reveal_format_chars_escapes_the_line_separators_too():
+    """U+2028/U+2029 are Zl/Zp, not Cf, so the category test let them through.
+
+    Qt lays both out as real line breaks even under Qt.PlainText, so a path
+    carrying one splits the confirmation dialog across lines and lets terminal
+    output append plausible-looking extra dialog copy below the real path.
+    """
+    from easyterpro.shellquote import reveal_format_chars
+    assert reveal_format_chars("a\u2028b") == "a<U+2028>b"
+    assert reveal_format_chars("a\u2029b") == "a<U+2029>b"
+    # the Cf characters it already handled must keep working
+    assert reveal_format_chars("a\u200bb") == "a<U+200B>b"
+    assert reveal_format_chars("a\u202eb") == "a<U+202E>b"
+    assert reveal_format_chars("plain.txt") == "plain.txt"
+
+
+def test_reader_carry_is_bounded_so_a_long_run_cannot_stall_the_pane():
+    """An "incomplete sequence" longer than any real one must go to pyte.
+
+    INCOMPLETE_TAIL_RE matches an arbitrarily long run of CSI parameter bytes,
+    so output ending in one was retained whole and nothing was fed or painted.
+    The carry grew linearly with the output: 32 chunks of 64 KiB retained 2 MiB
+    and fed pyte nothing. pyte parses incrementally and keeps its own parser
+    state across feed(), so handing it the excess is safe; the carry exists for
+    the scanners, not for pyte.
+    """
+    backend = EasyTer.PtyBackend.__new__(EasyTer.PtyBackend)
+
+    flood = "\x1b[" + "1" * 65536
+    fed, carry = backend._split_incomplete_tail(flood)
+    assert carry == ""
+    assert fed == flood
+
+    # a genuinely short incomplete CSI is still held back for the next read
+    fed, carry = backend._split_incomplete_tail("abc\x1b[1;2")
+    assert fed == "abc"
+    assert carry == "\x1b[1;2"
+
+    # and a chunk ending in a complete sequence carries nothing
+    fed, carry = backend._split_incomplete_tail("abc\x1b[1;2m")
+    assert fed == "abc\x1b[1;2m"
+    assert carry == ""
+
+
+def test_easyterpro_backend_releases_when_the_shell_exits_by_itself():
+    """A self-exited shell must not leave _alive True with the console held.
+
+    EasyTer.py's _release docstring documents this exact bug; the fix was never
+    carried over to easyterpro, whose reader finally only emits `exited`. The
+    result was write() still accepting input into a dead shell, and the
+    PtyProcess held for the pane's whole remaining lifetime.
+    """
+    from easyterpro.backend import PtyBackend
+    backend = PtyBackend.__new__(PtyBackend)
+    backend._alive = True
+
+    terminated = []
+
+    class _Proc:
+        def terminate(self, force=False):
+            terminated.append(force)
+
+    backend.proc = _Proc()
+    backend._release()
+    assert backend._alive is False
+    assert backend.proc is None
+    assert terminated == [True]
+
+    backend._release()          # idempotent: the reader finally and close() both call it
+    assert backend.proc is None
+    assert terminated == [True]

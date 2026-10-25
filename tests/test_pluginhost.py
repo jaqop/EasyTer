@@ -249,3 +249,31 @@ def test_bundled_disabled_list_is_honored():
     assert "sample_overlay" in [n for n in ("sample_overlay",)]  # sanity
     assert "sample_overlay" not in reg.loaded
     assert "sample_timestamp" in reg.loaded
+
+
+def test_commit_failure_is_isolated_like_a_register_failure(monkeypatch):
+    """A theme the commit phase cannot install must not take the host down.
+
+    add_theme validates the spec but not the name, and load() calls _commit()
+    outside the per-plugin try — so an unhashable name escaped load() entirely,
+    skipping every later plugin and recording nothing in registry.failed.
+    """
+    installed = {}
+    monkeypatch.setattr(pluginhost, "_install_theme",
+                        lambda name, spec: installed.__setitem__(name, spec))
+
+    def register_bad_theme_name(api):
+        api.add_theme(["Neon"], {"bg": "#000", "fg": "#fff", "ansi": {}})
+
+    def register_palette_action(api):
+        api.add_palette_action("still runs", lambda: None)
+
+    reg = load_modules({
+        "themer": make_module(register_bad_theme_name),
+        "later": make_module(register_palette_action),
+    })
+
+    assert [name for name, _ in reg.failed] == ["themer"]
+    assert reg.loaded == ["later"]
+    assert len(reg.palette_actions) == 1
+    assert installed == {}
