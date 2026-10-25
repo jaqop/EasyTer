@@ -1,80 +1,219 @@
-# EasyTer Pro — Handoff / Continuation Brief
-_Last updated: 2026-06-24. Paste-able into a fresh Claude session to resume work._
+# EasyTer — continuation brief
+
+_Last verified: 2026-10-25, against commit `39b510a` (working tree clean)._
+_Paste-able into a fresh session. Every claim below names the command that produced it._
 
 ## What this is
-A **Windows terminal that renders connected Arabic with correct BiDi** — the one thing every grid
-terminal (Windows Terminal, WezTerm, kitty, VS Code, Alacritty) fails. Built on **PySide6/Qt6 +
-pyte (VT emulator) + pywinpty (ConPTY)**. The trick that makes Arabic work: each row is rendered
-through a single **`QTextLayout`**, so Qt does HarfBuzz shaping + Unicode BiDi reordering in one pass.
 
-## ⚠️ TWO versions live in the SAME folder `C:\Users\Admin\EasyTer` — do not confuse them
-| | path | window title | config | who builds it |
-|---|---|---|---|---|
-| **EasyTer** (old, single file) | `EasyTer.py` (100 KB) | `EasyTer — طرفيّة عربيّة` | `easter_config.json` / `easyter_config.json` | a SEPARATE Claude session — has a "وضع كلود" Claude mode |
-| **EasyTer Pro** (THIS track) | `easyterpro\` (package) | `EasyTer Pro — طرفيّة عربيّة` | `~/.easyterpro/config.json` | **us — all new features go here** |
+A **Windows terminal that renders connected Arabic with correct BiDi** — the one thing
+every grid terminal (Windows Terminal, WezTerm, kitty, VS Code, Alacritty) fails. Built on
+**PySide6/Qt6 + pyte (VT emulator) + pywinpty (ConPTY)**. The trick that makes Arabic work:
+each row is rendered through a single **`QTextLayout`**, so Qt does HarfBuzz shaping +
+Unicode BiDi reordering (UAX #9) in one pass.
 
-**All feature work in this brief targets `easyterpro\`.** `EasyTer.py` is the user's working fallback; leave it alone.
+## Where things stand
 
-## How to launch
-```powershell
-cd C:\Users\Admin\EasyTer
-pythonw -m easyterpro      # normal (no console)
-python  -m easyterpro      # debug (console shows tracebacks)
+`main` is at `39b510a` (the merge of PR #14), and #11 (CI), #13 (the NTLM path gate) and
+#14 (input-side hardening) are all in. Two pull requests are open against it:
+
+- **PR #15**, branch `claude/easyter-repo-d7ada9` — this document's rewrite, plus removing
+  the `easyterpro/` line from `.gitignore` and the dead import that exposed. Docs and
+  repo hygiene only; no runtime behaviour changes. CI green.
+- **PR #16**, branch `claude/vigorous-hellman-46d439` — the drive-cache and hover-cursor
+  fixes PR #14 deferred, with restored tests and `TEST_FLOOR` raised to 370. CI green.
+  This is the real code change of the two. See **Pending**, item 1.
+
+Neither branch is in this checkout. From a fresh one:
+`git fetch && git log --oneline origin/main..origin/<branch>` shows what each carries.
+
+## ⚠️ The two apps, and which one is the product
+
+This repo holds two applications. **Their roles are the reverse of what earlier notes said**,
+so do not trust any description of this that predates 2026-10-25.
+
+| | `EasyTer.py` | `easyterpro/` |
+|---|---|---|
+| role | **the product** | second app **+ shared library** |
+| size | 5,718 lines, one file | 20 modules |
+| ships? | **yes** — `EasyTer.spec` builds it into `dist/EasyTer/EasyTer.exe`, `release.yml` attaches the zip to each `v*` tag | no — source only |
+| documented? | yes, the README is about this | not mentioned in the README |
+| run | `pythonw EasyTer.py`, `run.bat`, `EasyTer.vbs` | `python -m easyterpro` |
+| window title | `i18n.t("win.title")` | `EasyTer Pro — طرفيّة عربيّة` |
+| config | `easyter_config.json` (next to the script; `~/.easyter/` when frozen) | `~/.easyterpro/config.json` |
+| plugins | `~/.easyter/init.py`, decorator API (`_PluginAPI`, EasyTer.py:1075) | `easyterpro/plugins/*.py`, `register(api)` API |
+
+**`EasyTer.py` imports three modules out of `easyterpro/`** — that is the whole coupling:
+
 ```
-Python is **3.14 at `C:\Python314`**. To relaunch during dev (kill + start):
-```powershell
-Get-CimInstance Win32_Process -Filter "Name='pythonw.exe' OR Name='python.exe'" | ? { $_.CommandLine -match 'easyterpro' } | % { Stop-Process -Id $_.ProcessId -Force }
-Start-Process pythonw -ArgumentList '-m','easyterpro' -WorkingDirectory 'C:\Users\Admin\EasyTer'
+EasyTer.py:33-41  →  easyterpro.localpath, easyterpro.pasteguard, easyterpro.shellquote
 ```
-Verify a `.py` before launch: `python -m py_compile easyterpro\<file>.py`.
 
-## File map (`easyterpro\`)
+Those three are the **shared security layer for both apps**. A change to them lands in the
+shipped product and in EasyTer Pro at once. Everything else in `easyterpro/` (`window.py`,
+`terminal.py`, `backend.py`, `render.py`, …) belongs to EasyTer Pro alone and is not in the exe.
+
+Re-derive this any time:
+
+```sh
+grep -rn 'easyterpro' --include='*.py' --include='*.spec' . | grep -v '^./easyterpro/'
+```
+
+Note the two plugin systems are **unrelated implementations**, not one system shared. Likewise
+the two theme tables are separate (see **Verified**).
+
+## File map — `easyterpro/`
+
 | file | role |
 |---|---|
-| `__main__.py` | entry point. **CRITICAL: redirects sys.stdout/stderr to os.devnull when None** (pythonw has no console → any lib writing to stdout crashes the app SILENTLY at startup). This guard is why the app finally runs from the shortcut. |
-| `window.py` | `MainWindow` — tabs (QTabWidget), "+" profile dropdown (top-right), menu, `_open_gallery()` (Ctrl+Shift+M), `_set_theme_global()`. |
-| `terminal.py` | `TerminalWidget` — the core: pyte HistoryScreen + paintEvent (per-row QTextLayout), cursor draw (block/beam/underline + blink), `contextMenuEvent` (right-click), `_MENU_QSS` (fixed-dark menu stylesheet). **Has the integer-cw bug — see Pending.** |
-| `backend.py` | `PtyBackend` — wraps `winpty.PtyProcess.spawn(command, dimensions=(rows,cols))`. |
-| `panes.py` | split panes (nested QSplitter). Ctrl+Shift+D/E split, Ctrl+Shift+W close. |
-| `profiles.py` | shell auto-detect → list of `Profile(name, command)`. PowerShell / cmd / Git Bash / pwsh / WSL. |
-| `config.py` | `config()` singleton. `.get(*keys, default=)`, `.set(value, *keys)` → saves `~/.easyterpro/config.json` + emits `changed`. |
-| `render.py` | themes. `THEMES` dict, `apply_theme(name)` sets `BASE_BG/BASE_FG/PALETTE`, `theme_names()`. Loads `schemes.json` on import. |
-| `schemes.json` | 551 bundled color schemes (converted from iTerm2-Color-Schemes). **560 themes total** (13 built-in + 547 unique bundled). |
-| `_gen_schemes.py` | build helper: converts Windows-Terminal-format scheme JSON → easyterpro format (renames purple→magenta). |
-| `gallery.py` | `AppearanceGallery` (Ctrl+Shift+M) — searchable card grid (≤120 shown), cursor-shape row, oh-my-posh combo. **Chrome is fixed-dark** so light themes stay readable. |
-| `palette.py` | command palette (Ctrl+Shift+P) — fuzzy action list. |
-| `posh.py` | oh-my-posh: 10 famous themes; reads/writes the managed `oh-my-posh init` line in `$PROFILE`. |
-| `pluginhost.py` | **plugin system.** `Registry` singleton + `PluginAPI` facade (`register(api)`) + isolated `load()` + `safe_dispatch()`. Qt-free at import (lazy render/config imports) so it's unit-testable. Widgets PULL from `registry` at call time (no per-widget wiring). |
-| `plugins/` | bundled first-party plugins, auto-loaded. Each `.py` defines `register(api)`; 4 samples (timestamp/theme/activity/overlay) + `README.md` (the API contract). Disable via `config plugins.disabled`. |
+| `localpath.py` | **the NTLM gate.** `accept_local_path` is purely lexical — it never calls the filesystem, because on Windows those calls *are* the leak. Plus `local_drive_ok` (GetDriveTypeW), `cached_drive_ok`, `hover_file_reference`, `require_wide_path`. Used by both apps. See `docs/SECURITY.md`. |
+| `shellquote.py` | quoting for a *known* shell (PowerShell / cmd / POSIX): dropped files, oh-my-posh theme paths. `accept_local_path` is **not** a quoter — it accepts `'`, `;`, `&`, `$(` and backticks. Used by both apps. |
+| `pasteguard.py` | paste confirmation + bracketed-paste wrapping; strips an embedded paste-end marker. Used by both apps. |
+| `__main__.py` | EasyTer Pro entry point. **Redirects sys.stdout/stderr to devnull when None** — see Landmines. |
+| `window.py` | `MainWindow` — tabs, profile dropdown, menu, gallery, theme application. |
+| `terminal.py` | `TerminalWidget` — pyte HistoryScreen + per-row `QTextLayout` paint, cursor, context menu. |
+| `backend.py` | `PtyBackend` — wraps `winpty.PtyProcess.spawn`. |
+| `render.py` | themes. `THEMES` dict + `_load_bundled_schemes()` reading `schemes.json` at import. |
+| `schemes.json` | bundled color schemes, converted from iTerm2-Color-Schemes. |
+| `_gen_schemes.py` | build helper: Windows-Terminal scheme JSON → easyterpro format (renames purple→magenta). |
+| `gallery.py` / `palette.py` / `prompt_picker.py` / `posh.py` | appearance gallery, command palette, oh-my-posh picker with live previews. |
+| `panes.py` / `profiles.py` / `config.py` | split panes, shell auto-detect, config singleton. |
+| `pluginhost.py` | EasyTer Pro's plugin system. `Registry` + `PluginAPI` + isolated `load()` + `safe_dispatch()`. Qt-free at import, so it is unit-testable. |
+| `plugins/` | bundled first-party plugins, auto-loaded; each defines `register(api)`. Disable via `config plugins.disabled`. |
 
-## Features DONE
-- **Plugin system** (2026-07-24) — bundled first-party plugins in `plugins/`, loaded at startup by `pluginhost.load(win)` in `__main__.py`. Capabilities via `register(api)`: `add_palette_action`, `add_theme`, `on_output(text)`, `add_paint_hook(painter,widget)`, plus `write_to_active`/`active_terminal`/`setting`. **Fully error-isolated** (import/register/hook failures logged to `~/.easyterpro/plugins.log`, never crash the app — honors the pythonw guard). Wiring: `backend.output_text` signal → `terminal._dispatch_plugin_output`; paint hooks at end of `terminal.paintEvent` (auto-disable on error); `window._build_actions` appends `registry.palette_actions`. Unit+integration tests in `tests/test_pluginhost.py` (19, all green; run `python -m pytest` from repo root). Design spec: `docs/specs/2026-07-24-plugin-system-design.md`.
-- **Connected Arabic + BiDi** (the core, via QTextLayout per row).
-- **Full-screen app (alt-screen) rendering** (added 2026-06-24) — TUIs (Claude Code, vim) auto-detected via a `?1049h/l` scan in `backend.py` (`_scan_alt` → `alt_screen_changed` signal) → rendered by `_draw_row_grid` in `terminal.py`: **non-Arabic drawn cell-by-cell pinned to the float-cw grid** (no drift → pixel-art/box-borders crisp), **Arabic runs reversed (visual→logical) + shaped RTL** in their cells. Fixed: right-edge clipping, the distorted Claude crab mascot, and reversed Arabic inside Claude. **Known limitation (NOT a terminal bug):** Claude Code's OWN input box collapses when RTL text is present — its Ink/Yoga layout measures width assuming LTR. Confirmed terminal-side is correct: `wcwidth`=1 per Arabic char, matching Claude's own column count, so no cursor drift originates here. Not fixable from the terminal.
-- **Tabs + split panes** (Ctrl+Shift+T new tab, D/E split, W close).
-- **Shell profiles + auto-detect** — "+" dropdown top-right. PowerShell (`-NoProfile` default for speed), cmd, **Git Bash (FIXED 2026-06-24)**, pwsh/WSL if present.
-- **560 color themes** + **searchable visual gallery** (Ctrl+Shift+M, or right-click → معرض المظاهر…). Right-click → سمة سريعة = 13 built-ins only.
-- **Cursor shapes** — block / beam / underline + blink toggle (gallery row; config `cursor.style`/`cursor.blink`).
-- **Prompt-style picker with LIVE previews** (`prompt_picker.py`, + menu → «شكل الموجِّه…») — 9 distinct oh-my-posh styles, each rendered live via `oh-my-posh print primary` then ANSI→HTML (`_ansi_to_html` + `_strip_noise` drops OSC/non-SGR). Click a card → applies. Includes a custom **`kali`** framed theme at `~/.poshthemes/kali.omp.json`. **Live-apply:** `window._apply_prompt_live` injects `oh-my-posh init pwsh --config <t> | iex 2>$null` into the active PowerShell pane → the CURRENT tab's prompt updates (not just new tabs). `2>$null` silences benign PSReadLine errors from re-init on PowerShell 5.1. `posh.available()` now lists ALL `.omp.json` in `~/.poshthemes` (FEATURED first). The older gallery combo (`Ctrl+Shift+M` → posh row) still exists too.
-- **Default «PowerShell» loads `$PROFILE`** (was `-NoProfile`) so oh-my-posh actually shows; a «PowerShell (سريع · بلا profile)» variant remains in the + menu for fast startup. (profiles.py)
-- **Command palette** (Ctrl+Shift+P), **clickable URLs** (Ctrl+click).
-- **Config** persisted at `~/.easyterpro/config.json`, live-applied via `changed` signal.
+## Pending
 
-## Pending / next (priority order)
-1. **Background images** — user-selected feature, NOT started. Like Windows Terminal: pick an image + opacity, paint under the text in `terminal.py` paintEvent. Add `background.image`/`background.opacity` to config + a row in the gallery.
-2. **Intelligent terminal / AI agent** — user-selected (from github.com/microsoft/intelligent-terminal). BIG. **Design + confirm with the user before building.** Idea: a side pane / inline that detects command errors and suggests fixes, NL→command. Defer until backgrounds done.
-3. ✅ **integer-cw bug — FIXED 2026-06-24.** Was `cw = QFontMetrics.horizontalAdvance("M")` = **9** (int) while the real advance is **9.344** → `cols = width // 9` overestimated → text overflowed/clipped past the right edge (seen running Claude Code in a Git Bash tab). Fixed in `terminal.py`: `cw` now `QFontMetricsF` (float) + 8 call-sites int-cast (cols/rows compute, cursor rects, selection rects, raw-cell rects). **EasyTer.py still has the same bug — lines 751 (`cw=`) & 796 (`cols=`).**
-4. oh-my-posh **live previews** in the gallery (deferred from v1).
+- [ ] **Re-land the drive-cache and hover-cursor fixes PR #14 dropped.**
+      **In flight as PR #16** (branch `claude/vigorous-hellman-46d439`), which restores both
+      with tests. Tick this once it merges; until then neither fix is in `main`.
+      Commit `b5c9da7` built both; commit `5fda654` removed them again to keep the PR small
+      ("Leave drive-cache and hover-cursor fixes for a later PR").
+      Two separate behaviours:
+      **(a) drive-type freshness** — `local_drive_ok` caches the `GetDriveTypeW` answer per
+      drive letter forever, so a letter remapped to a share *after* its first classification
+      keeps the stale "local" verdict. The dropped version read the type fresh before each
+      filesystem call and kept the cache for hover hints only.
+      **(b) hover existence** — `_hover_file` is now purely lexical, so Ctrl+hover shows the
+      hand cursor for a path that does not exist. The dropped version added a 50 ms debounced
+      existence check off the mouse-move path, cached at 64 entries.
+      Found by: `git show 5fda654 -- EasyTer.py easyterpro/localpath.py`
+      Last run: 2026-10-25
 
-## Critical gotchas (hard-won — don't relearn these)
-- **pythonw silent crash:** under `pythonw.exe` `sys.stdout`/`sys.stderr` are `None`; any library writing to them at import crashes the app with NO error. Fixed by the guard in `__main__.py`. If a new dep prints at import, this is why a launch "does nothing."
-- **winpty can't spawn paths with spaces:** `PtyProcess.spawn('"C:\Program Files\...\bash.exe" ...')` → FileNotFoundError (quotes included in lookup); unquoted → splits on the space. **Fix: 8.3 short path** (`C:\PROGRA~1\Git\bin\bash.exe`) via `GetShortPathNameW` (ctypes) — see `profiles.py _short_path()`. Apply the same to ANY spaced-path profile.
-- **Qt stylesheet inheritance breaks light themes:** a window `setStyleSheet("background:white")` cascades into child `QMenu`/`QDialog` → light-on-light unreadable. **Fix: give menus/dialogs an explicit fixed-dark QSS** (`_MENU_QSS` in terminal.py; gallery chrome hardcoded `#1c1c1e`/`#e6edf3`). The terminal body still takes the theme color; only the app chrome is fixed-dark.
-- **Environment deletion hook:** `Remove-Item -Recurse` / `rmdir /s` are BLOCKED even with `dangerouslyDisableSandbox:true` ("path is protected from removal"). `Stop-Process` is allowed. To delete a folder, hand the user a paste-able command.
-- **pyte names yellow "brown":** in `render.py`, `PALETTE["brown"]` = the theme's yellow.
+- [ ] **Decide whether `_hover_file`'s current laxness is acceptable or a gap.**
+      (judgement — not verified; re-read `EasyTer.py:2983` `_hover_file` and
+      `easyterpro/localpath.py:152` `hover_file_reference` before acting.)
 
-## User & working style
-Arabic novelist (GitHub `jaqop`, jaqopx1@outlook.com), building the "Elintor" novel; this terminal serves his Arabic writing. **Action-oriented, dislikes verbosity/hedging/blind-debugging.** Verifies by screenshot. Wants to choose appearances himself. When stuck, read the actual code + test, don't guess. Tabby fork was abandoned & deleted — do not resurrect it.
+- [ ] **`easyterpro/` has no stated future.** It is simultaneously a live dependency of the
+      shipped product and an undocumented second app that the README never mentions and the
+      exe never contains. Whether EasyTer Pro is still a product direction, or whether the
+      three shared modules should move somewhere neutral, is an open question for the author.
+      (judgement — not verified; nothing in the repo records a decision either way.)
+
+## Verified this session
+
+These were measured on 2026-10-25. They may be leaned on without re-running, but each
+names its measurement so you can.
+
+- **The integer-`cw` bug is fixed in both apps.** Earlier notes claimed `EasyTer.py` still
+  had it at lines 751/796 — that is **wrong**; those line numbers now point at unrelated code.
+  Both use the float `QFontMetricsF`:
+  `EasyTer.py:1972` and `easyterpro/terminal.py:131`.
+  Measured by: `grep -n 'QFontMetricsF' EasyTer.py easyterpro/terminal.py`
+
+- **Theme counts differ between the apps, because only EasyTer Pro loads `schemes.json`.**
+  `EasyTer.py` THEMES: 17 literal entries, plus `~/.easyter/themes/*.json` at runtime — it
+  never reads `schemes.json`. `easyterpro/render.py` THEMES: 13 literal entries, plus 551
+  loaded from `schemes.json` by `_load_bundled_schemes()` at import.
+  Measured by: `grep -n 'schemes' EasyTer.py` (comment only), `python -c "import json;print(len(json.load(open('easyterpro/schemes.json',encoding='utf-8'))))"`,
+  and counting the 4-space-indented keys inside each `THEMES = {` literal.
+  (Counting `^    "` across the whole of `render.py` gives 17 — it catches quotes outside
+  the literal. Match the block, not the file.)
+
+- **The suite is green: 368 passed, 0 skipped**, which matches CI's `TEST_FLOOR` exactly.
+  It needs `pytest-qt` installed into 3.14 — without it, 16 tests error with
+  `fixture 'qapp' not found` and one more fails for the reason under Landmines.
+  Measured by: `C:\Python314\python.exe -m pytest -q`
+
+- **Both `C:\Python314` and `C:\Python315` can run the app; only 3.14 can run the tests.**
+  3.15 is first on PATH and, since 2026-10-25, has PySide6 / pyte / pywinpty / wcwidth —
+  `EasyTer.py` imports and its dependency check passes there. It has no pytest.
+  Measured by: `where pythonw`,
+  `C:\Python315\python.exe -c "import PySide6, pyte, winpty, wcwidth"`, and
+  `QT_QPA_PLATFORM=offscreen C:\Python315\python.exe -c "import EasyTer"`
+
+## Landmines
+
+- **Two interpreters are in play, and `python` is not the one CI uses.** Python 3.15.1 is
+  installed and sits **ahead of 3.14 on PATH**, so `run.bat`, `EasyTer.vbs`, and
+  `pythonw EasyTer.py` all launch **3.15**. CI and `release.yml` pin **3.14**, so the app
+  you run by double-clicking is not the build the test suite covers. Keep that in mind when
+  a bug reproduces for the author but not in CI.
+  On 2026-10-25 the four runtime packages were installed into 3.15 (`pip install -r
+  requirements.txt`), which is why the launchers work. Before that they raised EasyTer's own
+  "missing required Python packages" dialog — if that dialog returns, a third interpreter has
+  jumped ahead on PATH; check with `where pythonw`.
+  **Tests still require 3.14** — 3.15 has no pytest. See Testing.
+
+- **A missing `pytest-qt` does not look like a missing `pytest-qt`.** Without it, 16 tests
+  error with `fixture 'qapp' not found` *and* `test_osc7_bad_host_never_stats` fails —
+  which reads like an NTLM-gate regression and is not one. `install_guard` patches
+  `os.path.exists` globally, so it also records calls made by Python's own import
+  machinery; with the Qt tests erroring out early, the stdlib modules that would otherwise
+  already be imported get imported inside the guarded window, and the test counts them. The
+  recorded paths are stdlib files such as `C:\Python314\Lib\urllib\__init__.py`, never the
+  UNC path under test, and `backend.cwd` is correctly left untouched throughout.
+  **Install `pytest-qt` before concluding anything about the gate**; the whole suite then
+  passes. Confirmed on 2026-10-25 by installing `pytest-qt==4.5.0` and re-running: 368
+  passed, that test among them.
+  Check with: `C:\Python314\python.exe -c "import pytestqt"`
+
+- **`ruff` lints whatever `.gitignore` does not hide.** `respect-gitignore` is on by
+  default, so while `easyterpro/` was ignored the package was never linted; removing that
+  rule put its 25 Python modules in scope and immediately surfaced a dead `QFontMetrics` import
+  in `terminal.py`. Expect the same if another path is ever un-ignored. Only the
+  `--select F,E9` pass blocks CI; the full pass is `--exit-zero` and reports ~289
+  pre-existing style findings repo-wide that are deliberately not gates.
+  Reproduce the blocking pass with: `python -m ruff check --select F,E9 .`
+  (needs exactly `ruff==0.17.2`; `ruff.toml` sets `required-version` and refuses to run otherwise)
+
+- **`pythonw` silent crash.** Under `pythonw.exe`, `sys.stdout`/`sys.stderr` are `None`; any
+  library that writes to them at import kills the app with **no error at all**. Both entry
+  points guard against this (`easyterpro/__main__.py:9`, `EasyTer.py:80`). If a new dependency
+  prints at import time, this is why a launch "does nothing".
+
+- **winpty cannot spawn paths containing spaces.** Quoted → the quotes are included in the
+  lookup; unquoted → it splits on the space. The fix is the 8.3 short path via
+  `GetShortPathNameW` — see `profiles.py` `_short_path()`. Apply it to any spaced-path profile.
+
+- **Qt stylesheet inheritance breaks light themes.** A window-level
+  `setStyleSheet("background:white")` cascades into child `QMenu`/`QDialog`, giving
+  light-on-light. The fix in place: app chrome gets an explicit fixed-dark QSS
+  (`_MENU_QSS` in `terminal.py`; gallery chrome hardcoded). Only the terminal body follows
+  the theme.
+
+- **pyte names yellow "brown".** In `render.py`, `PALETTE["brown"]` is the theme's yellow.
+
+- **CI fails on *skipped* tests, not only failures.** `ci.yml` throws when `skipped > 0`, so
+  an import-failure `skipIf` cannot hide a test. It also enforces `TEST_FLOOR` (368) —
+  **raise it in the same PR that adds tests**.
+
+## Testing
+
+```sh
+C:\Python314\python.exe -m pip install -r requirements-dev.txt
+C:\Python314\python.exe -m pytest
+```
+
+`conftest.py` at the repo root forces `QT_QPA_PLATFORM=offscreen` before PySide6 picks a
+platform plugin. `pytest.ini` collects both `tests/` and `dev/`.
+
+## Author & working style
+
+Arabic novelist (GitHub `jaqop`, jaqopx1@outlook.com), writing the "Elintor" novel; this
+terminal serves that Arabic writing. Action-oriented, dislikes verbosity, hedging, and
+blind debugging. Verifies by screenshot. Wants to choose appearances himself. When stuck,
+read the actual code and test it — do not guess. The Tabby fork was abandoned and deleted;
+do not resurrect it.
 
 ## Related memory
+
 See `[[arabic-terminal-project]]` (auto-loaded) and `[[sillytavern-writing-setup]]`.

@@ -25,7 +25,6 @@ _size_debug.log
 # Local backups / experiments (not part of the release)
 EasyTer_before_gridengine.py
 EasyTer_cmdrunner_backup.py
-easyterpro/
 
 # Internal design/plan docs (not for the public repo)
 docs/superpowers/
