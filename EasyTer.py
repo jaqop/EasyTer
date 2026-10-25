@@ -353,6 +353,26 @@ SETTINGS = {
     "favorite_themes": [],     # themes hearted in the appearance gallery (shown first)
     "prompt_theme": "",        # chosen oh-my-posh prompt theme (.omp.json); applied to new tabs
 }
+# The defaults above, kept pristine. load_settings checks each loaded value
+# against the type of its default: the config file is hand-editable and is read
+# before the window exists, so a wrong type there reaches Qt and kills startup
+# with no console (pythonw) to report it - and the bad file is never rewritten,
+# so the next launch fails the same way.
+_SETTINGS_DEFAULTS = dict(SETTINGS)
+
+
+def _settings_value_ok(key, value):
+    """Whether a loaded value can stand in for the default of the same key."""
+    default = _SETTINGS_DEFAULTS[key]
+    if default is None:                 # palette: a dict of ANSI names, or none
+        return value is None or isinstance(value, dict)
+    if isinstance(default, bool):       # before int: bool is an int subclass
+        return isinstance(value, bool)
+    if isinstance(default, int):
+        return isinstance(value, int) and not isinstance(value, bool)
+    if isinstance(default, float):      # an int is a fine opacity
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    return isinstance(value, type(default))
 
 
 def existing_local_dir(path):
@@ -686,9 +706,17 @@ def load_themes():
 def load_settings():
     try:
         with open(CONFIG_PATH, encoding="utf-8") as f:
-            SETTINGS.update(json.load(f))
+            raw = json.load(f)
     except Exception:
-        pass
+        return
+    if not isinstance(raw, dict):
+        return
+    for key, value in raw.items():
+        # A known key whose type cannot work is skipped, so the default stands
+        # and the app still starts. Unknown keys are kept as they always were.
+        if key in _SETTINGS_DEFAULTS and not _settings_value_ok(key, value):
+            continue
+        SETTINGS[key] = value
 
 
 def save_settings():
