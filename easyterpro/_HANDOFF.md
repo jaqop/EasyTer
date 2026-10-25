@@ -13,11 +13,18 @@ Unicode BiDi reordering (UAX #9) in one pass.
 
 ## Where things stand
 
-Nothing is unmerged. `main` is at `39b510a` (merge of PR #14), the working tree is clean,
-and the last three PRs (#11 CI, #13 the NTLM path gate, #14 input-side hardening) are all in.
-There is no branch carrying unlanded work.
+`main` is at `39b510a` (the merge of PR #14), and #11 (CI), #13 (the NTLM path gate) and
+#14 (input-side hardening) are all in. Two pull requests are open against it:
 
-The open thread is the chunk PR #14 deliberately dropped — see **Pending**, item 1.
+- **PR #15**, branch `claude/easyter-repo-d7ada9` — this document's rewrite, plus removing
+  the `easyterpro/` line from `.gitignore` and the dead import that exposed. Docs and
+  repo hygiene only; no runtime behaviour changes. CI green.
+- **PR #16**, branch `claude/vigorous-hellman-46d439` — the drive-cache and hover-cursor
+  fixes PR #14 deferred, with restored tests and `TEST_FLOOR` raised to 370. CI green.
+  This is the real code change of the two. See **Pending**, item 1.
+
+Neither branch is in this checkout. From a fresh one:
+`git fetch && git log --oneline origin/main..origin/<branch>` shows what each carries.
 
 ## ⚠️ The two apps, and which one is the product
 
@@ -76,8 +83,10 @@ the two theme tables are separate (see **Verified**).
 ## Pending
 
 - [ ] **Re-land the drive-cache and hover-cursor fixes PR #14 dropped.**
+      **In flight as PR #16** (branch `claude/vigorous-hellman-46d439`), which restores both
+      with tests. Tick this once it merges; until then neither fix is in `main`.
       Commit `b5c9da7` built both; commit `5fda654` removed them again to keep the PR small
-      ("Leave drive-cache and hover-cursor fixes for a later PR"). Neither is in the tree now.
+      ("Leave drive-cache and hover-cursor fixes for a later PR").
       Two separate behaviours:
       **(a) drive-type freshness** — `local_drive_ok` caches the `GetDriveTypeW` answer per
       drive letter forever, so a letter remapped to a share *after* its first classification
