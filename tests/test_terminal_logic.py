@@ -1273,3 +1273,52 @@ def test_logical_line_strips_the_padding_before_reversing_it_to_the_front():
 
     # a line that needs no reversal is unchanged apart from the padding
     assert EasyTer._logical_line("plain ascii" + " " * 40, None) == "plain ascii"
+
+
+# An internal separator between two alphanumerics is one LTR run under UAX #9
+# either way, so L2 cannot reorder the token's characters: whatever the correct
+# answer for the surrounding line is, such a token present in the visual line
+# must come back verbatim. That is checkable without a reference implementation,
+# which matters because hand-built "visual order" inputs cannot be trusted here.
+#
+# Deliberately NOT covered: brackets, operators and a trailing %. Their correct
+# treatment depends on how UAX #9 resolves neutrals against the surrounding
+# context, and this project has no oracle for that yet - asserting a guess
+# would be worse than leaving them alone.
+_ISLAND_CASES = [
+    ("1,234", "رطس 1,234 ءاشنإ مت"),
+    ("12,345,678", "مت 12,345,678 فلم"),
+    ("don't", "مت don't فلم"),
+    # these already held and must keep holding
+    ("3.14159", "مت 3.14159 فلم"),
+    ("config.txt", "مت config.txt فلم"),
+    ("v1.2", "مت v1.2 فلم"),
+    ("src/app.py", "مت src/app.py فلم"),
+    ("a_b-c", "مت a_b-c فلم"),
+]
+
+
+@pytest.mark.parametrize("token,visual", _ISLAND_CASES)
+def test_an_ltr_token_survives_the_visual_to_logical_pass(token, visual):
+    """A displayed number must copy as the same number.
+
+    _LTR_PUNCT held ._-/:\@~+=#&% but not the comma or the apostrophe, so an
+    island split there - and because the whole line had already been reversed,
+    the halves came back reversed around it: 1,234 copied as 234,1. Claude Code
+    prints grouped counts constantly, so this is the common case.
+    """
+    out = EasyTer.unbidi_rtl_line(visual)
+    assert token in out, "token %r lost; got %r" % (token, out)
+
+
+def test_punctuation_that_ends_a_token_still_stays_out_of_the_island():
+    """The docstring's own counter-example: a trailing mark must not join.
+
+    Punctuation joins an island only when an LTR character follows it, so
+    widening the set must not change a mark that ends a token - otherwise
+    "01." would come back as ".01".
+    """
+    digits_then_dot = EasyTer.unbidi_rtl_line("مت 01. فلم")
+    assert "01" in digits_then_dot
+    # the comma now joins only between digits, never at the end of a run
+    assert "7," not in EasyTer.unbidi_rtl_line("مت 7, فلم")

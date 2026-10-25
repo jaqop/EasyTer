@@ -927,7 +927,13 @@ def line_is_rtl_visual(text):
     return ar > 0 and ar >= lt
 
 
-_LTR_PUNCT = "._-/:\\@~+=#&%"
+# Marks that may sit INSIDE an LTR island. They are absorbed only when an LTR
+# character follows (see unbidi_rtl_line), so a mark that ends a token still
+# stays out and "01." does not come back as ".01". The comma and apostrophe
+# belong here for the same reason the dot does - a group separator in 1,234 and
+# the apostrophe in don't sit between two LTR characters, so UAX #9 keeps them
+# inside that run and L2 cannot reorder across them.
+_LTR_PUNCT = "._-/:\\@~+=#&%,'"
 
 
 def unbidi_rtl_line(line):
