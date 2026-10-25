@@ -1004,3 +1004,57 @@ def test_bytes_paths_never_hit_the_filesystem(monkeypatch):
     assert localpath.local_drive_ok(b"C:\\a") is False
     assert EasyTer.existing_local_file(b"C:\\a\\b.txt") is False
     assert EasyTer.existing_local_dir(b"C:\\a") is None
+
+
+def test_confirm_dialog_reveals_format_chars_in_the_path(qapp, monkeypatch):
+    """The OSC 6969 dialog is the one whose whole text is attacker-controlled.
+
+    The drop card already escapes these; this dialog showed the path raw, so a
+    zero-width or line-separator character could hide or restructure what the
+    user is being asked to approve.
+    """
+    import EasyTer
+    from PySide6.QtWidgets import QMessageBox
+    shown = {}
+
+    class _Box:
+        Question = QMessageBox.Question
+        Ok = QMessageBox.Ok
+        Cancel = QMessageBox.Cancel
+
+        def __init__(self, parent=None):
+            pass
+
+        def setTextFormat(self, fmt):
+            return None
+
+        def setIcon(self, _icon):
+            return None
+
+        def setWindowTitle(self, text):
+            return None
+
+        def setText(self, text):
+            shown["text"] = text
+
+        def setInformativeText(self, text):
+            return None
+
+        def setStandardButtons(self, _buttons):
+            return None
+
+        def setDefaultButton(self, _button):
+            return None
+
+        def exec(self):
+            return QMessageBox.Cancel
+
+    monkeypatch.setattr("PySide6.QtWidgets.QMessageBox", _Box)
+    BS = chr(92)                      # a literal backslash
+    base = "C:@Users@me@no%stes.txt"
+
+    EasyTer.confirm_local_open(None, (base % "\u2028").replace("@", BS))
+    assert shown["text"] == (base % "<U+2028>").replace("@", BS)
+
+    EasyTer.confirm_local_open(None, (base % "\u200b").replace("@", BS))
+    assert shown["text"] == (base % "<U+200B>").replace("@", BS)

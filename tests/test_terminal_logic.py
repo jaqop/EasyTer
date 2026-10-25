@@ -919,3 +919,19 @@ def test_easyterpro_config_set_replaces_a_scalar_standing_where_a_section_belong
     cfg.set(["sample_overlay"], "plugins", "disabled")
 
     assert cfg.get("plugins", "disabled") == ["sample_overlay"]
+
+
+def test_reveal_format_chars_escapes_the_line_separators_too():
+    """U+2028/U+2029 are Zl/Zp, not Cf, so the category test let them through.
+
+    Qt lays both out as real line breaks even under Qt.PlainText, so a path
+    carrying one splits the confirmation dialog across lines and lets terminal
+    output append plausible-looking extra dialog copy below the real path.
+    """
+    from easyterpro.shellquote import reveal_format_chars
+    assert reveal_format_chars("a\u2028b") == "a<U+2028>b"
+    assert reveal_format_chars("a\u2029b") == "a<U+2029>b"
+    # the Cf characters it already handled must keep working
+    assert reveal_format_chars("a\u200bb") == "a<U+200B>b"
+    assert reveal_format_chars("a\u202eb") == "a<U+202E>b"
+    assert reveal_format_chars("plain.txt") == "plain.txt"

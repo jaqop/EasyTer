@@ -516,7 +516,10 @@ def confirm_local_open(parent, path):
     box.setTextFormat(Qt.PlainText)
     box.setIcon(QMessageBox.Question)
     box.setWindowTitle(i18n.t("edit.confirm_title"))
-    box.setText(path)
+    # The whole text of this dialog comes from terminal output, so show format
+    # characters as <U+XXXX> the way the drop card does - otherwise a
+    # zero-width or line-separator character hides part of what is approved.
+    box.setText(reveal_format_chars(path))
     box.setInformativeText(i18n.t("edit.confirm_body"))
     box.setStandardButtons(QMessageBox.Ok | QMessageBox.Cancel)
     box.setDefaultButton(QMessageBox.Cancel)
